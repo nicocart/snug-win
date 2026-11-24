@@ -15,16 +15,17 @@ internal interface IVirtualDisplayState
 
 public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
 {
-    private sealed record Screen(CherryMonitor Target, ScreenFit Fit, string Name);
+    private sealed record Screen(CherryMonitor Target, ScreenFit Fit, string Name, DateTimeOffset OnlineAt);
+    private sealed record UnconfirmedRequest(VddMonitor Monitor, HashSet<Guid> PriorKnownContainers);
 
-    private static readonly TimeSpan OnlineTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan OnlineTimeout = TimeSpan.FromSeconds(15);
     private readonly IVirtualDisplayIpc _ipc;
     private readonly DisplayOwnership _ownership;
     private readonly Func<bool> _isPipeAvailable;
     private readonly PhoneDisplayTopology _topology;
     private readonly TimeSpan _timeout;
     private readonly SemaphoreSlim _changes = new(1, 1);
-    private readonly HashSet<uint> _unconfirmed = [];
+    private readonly Dictionary<uint, UnconfirmedRequest> _unconfirmed = [];
     private readonly ConcurrentDictionary<uint, Screen> _ready = new();
     private readonly ConcurrentDictionary<uint, CherryMonitor> _retiring = new();
     private readonly HashSet<string> _startupPhysicalDevices;
@@ -57,6 +58,14 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
                 if (!_ready.ContainsKey(receipt.DriverId))
                     await RemoveOwnedAsync(receipt, ct).ConfigureAwait(false);
             }
+            if (_unconfirmed.Count > 0 || _ownership.PendingAll().Count > 0)
+            {
+                var state = await DriverStateAsync(ct).ConfigureAwait(false);
+                var inventory = _topology.Inspect();
+                if (_unconfirmed.Count > 0)
+                    await ReconcileUnconfirmedAsync(inventory, state, ct).ConfigureAwait(false);
+                await ReconcilePersistedPendingAsync(inventory, state, ct).ConfigureAwait(false);
+            }
         }
         finally { _changes.Release(); }
     }
@@ -71,16 +80,29 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
             if (!_isPipeAvailable()) throw Failed("未检测到 virtual-display-rs 驱动管道，未更改显示配置");
             var (state, connectionId) = await DriverStateSessionAsync(ct).ConfigureAwait(false);
             var before = await ReadBaselineAsync(ct).ConfigureAwait(false);
+            if (await ReconcileUnconfirmedAsync(before, state, ct).ConfigureAwait(false))
+            {
+                (state, connectionId) = await DriverStateSessionAsync(ct).ConfigureAwait(false);
+                before = await ReadBaselineAsync(ct).ConfigureAwait(false);
+            }
             var baselineNonCherry = SnapshotNonCherryDisplays();
-            var occupied = before.OccupiedIds.Concat(_ready.Keys).Concat(_retiring.Keys).Concat(_unconfirmed).ToHashSet();
+            var occupied = before.OccupiedIds
+                .Concat(_ready.Keys)
+                .Concat(_retiring.Keys)
+                .Concat(_unconfirmed.Keys)
+                .Concat(_topology.Active().Where(m => m.Cherry is not null).Select(m => m.Cherry!.DriverId))
+                .ToHashSet();
             occupied.UnionWith(state is null ? _topology.LegacyProfileIds() : state.Select(m => m.Id));
             uint id = PhoneScreenSpec.CandidateIds.FirstOrDefault(i => !occupied.Contains(i), uint.MaxValue);
             if (id == uint.MaxValue) throw Failed("没有可安全使用的 Cherry 显示器编号");
             string name = string.IsNullOrWhiteSpace(displayName) ? PhoneScreenSpec.Name : displayName;
             var monitor = new VddMonitor(id, name, true, BuildModes(fit));
+            Log.Info($"请求创建 Cherry 手机屏 #{id}（occupied=[{string.Join(",", occupied.OrderBy(x => x))}], legacy={_ipc.IsLegacyProtocol}）");
             ct.ThrowIfCancellationRequested();
-            await SubmitAsync(monitor, state, connectionId, replace: false, ct).ConfigureAwait(false);
+            await SubmitAsync(monitor, state, connectionId, replace: false, before.KnownContainers, ct).ConfigureAwait(false);
             await CompleteArrivalAsync(monitor, fit, before, baselineNonCherry, ct).ConfigureAwait(false);
+            if (_unconfirmed.Count > 0)
+                await ReconcileUnconfirmedAsync(_topology.Inspect(), await DriverStateAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false);
             return id;
         }
         finally { _changes.Release(); }
@@ -156,7 +178,63 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         throw Failed("无法确认驱动现有配置，为保护已有屏幕，未发送 Notify");
     }
 
-    private async Task SubmitAsync(VddMonitor monitor, IReadOnlyList<VddMonitor>? state, long connectionId, bool replace, CancellationToken ct)
+    private async Task ReconcilePersistedPendingAsync(CherryInventory inventory, IReadOnlyList<VddMonitor>? state, CancellationToken ct)
+    {
+        foreach (var (id, priorKnown) in _ownership.PendingAll())
+        {
+            if (_ready.ContainsKey(id) || _unconfirmed.ContainsKey(id))
+                continue;
+            var current = inventory.Unique(id);
+            if (current is null || priorKnown.Contains(current.ContainerId))
+            {
+                _ownership.ReleasePending(id);
+                continue;
+            }
+            if (state is not null && !state.Any(m => m.Id == id && m.Enabled))
+            {
+                _ownership.ReleasePending(id);
+                continue;
+            }
+            Log.Info($"检测到上次运行残留的 Cherry 手机屏 #{id}，清理中");
+            _ownership.Record(current);
+            if (await RemoveOwnedAsync(current, ct).ConfigureAwait(false))
+                _ownership.ReleasePending(id);
+        }
+    }
+
+    private async Task<bool> ReconcileUnconfirmedAsync(CherryInventory before, IReadOnlyList<VddMonitor>? state, CancellationToken ct)
+    {
+        if (_unconfirmed.Count == 0) return false;
+        bool removedAny = false;
+        foreach (var (id, request) in _unconfirmed.ToArray())
+        {
+            if (_ready.ContainsKey(id))
+            {
+                _unconfirmed.Remove(id);
+                continue;
+            }
+            var current = before.Unique(id);
+            if (current is null || request.PriorKnownContainers.Contains(current.ContainerId)) continue;
+            if (state is not null)
+            {
+                var actual = state.Where(m => m.Id == id).ToArray();
+                if (VirtualDisplayIpcClient.SerializeNotify(actual) != VirtualDisplayIpcClient.SerializeNotify([request.Monitor]))
+                    continue;
+            }
+            Log.Info($"检测到超时后延迟上线的 Cherry 手机屏 #{id}，先清理再重试");
+            _ownership.Record(current);
+            if (await RemoveOwnedAsync(current, ct).ConfigureAwait(false))
+            {
+                _unconfirmed.Remove(id);
+                _ownership.ReleasePending(id);
+                removedAny = true;
+            }
+        }
+        return removedAny;
+    }
+
+    private async Task SubmitAsync(VddMonitor monitor, IReadOnlyList<VddMonitor>? state, long connectionId, bool replace,
+        HashSet<Guid> priorKnownContainers, CancellationToken ct)
     {
         if (state is not null)
             (state, connectionId) = await RefreshBeforeNotifyAsync(state, monitor.Id, ct).ConfigureAwait(false);
@@ -164,7 +242,8 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         // Once sent, finish the bounded write (including legacy Remove + Add).
         // Observe caller cancellation in the arrival/rollback path, not mid-write.
         using var write = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-        _unconfirmed.Add(monitor.Id); // the write-only driver may silently ignore an occupied slot
+        _unconfirmed[monitor.Id] = new(monitor, priorKnownContainers.ToHashSet()); // the write-only driver may silently ignore an occupied slot
+        _ownership.RecordPending(monitor.Id, priorKnownContainers);
         if (replace && state is null)
             await _ipc.ReplaceLegacyAsync([monitor.Id], [monitor], write.Token).ConfigureAwait(false);
         else
@@ -204,7 +283,7 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
             await ApplyWidthAsync(proof, fit, fit.BaseWidth, ct).ConfigureAwait(false);
             EnsureNonCherryIntact(baselineNonCherry);
             ct.ThrowIfCancellationRequested();
-            _ready[monitor.Id] = new(proof, fit, monitor.Name!);
+            _ready[monitor.Id] = new(proof, fit, monitor.Name!, DateTimeOffset.Now);
             Log.Info($"Cherry 手机屏 #{monitor.Id} 已按 EDID 确认并切到 {fit}");
             return proof;
         }
@@ -225,7 +304,13 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
             return !before.KnownContainers.Contains(current.ContainerId) ? current : null;
         }
         var target = await PollAsync(FreshTarget, timeout, ct).ConfigureAwait(false);
-        if (target is null || _ipc.IsLegacyProtocol) return target;
+        if (target is null)
+        {
+            var snap = _topology.Inspect();
+            Log.Warn($"Cherry 手机屏 #{monitor.Id} 到达超时（present=[{string.Join(",", snap.Present.Select(p => $"#{p.DriverId}:{p.ContainerId}"))}], legacy={_ipc.IsLegacyProtocol}）");
+            return null;
+        }
+        if (_ipc.IsLegacyProtocol) return target;
 
         var expectedJson = VirtualDisplayIpcClient.SerializeNotify([monitor]);
         var timer = Stopwatch.StartNew();
@@ -233,6 +318,7 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         {
             ct.ThrowIfCancellationRequested();
             var state = await DriverStateAsync(ct).ConfigureAwait(false);
+            if (_ipc.IsLegacyProtocol) return target;
             if (state is not null)
             {
                 var actual = state.Where(m => m.Id == monitor.Id).ToArray();
@@ -255,8 +341,11 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
             if (proof is null) return; // a successful pipe write alone is not ownership
             _unconfirmed.Remove(proof.DriverId);
             _ownership.Record(proof);
-            if (!await RemoveOwnedAsync(proof, CancellationToken.None).ConfigureAwait(false)
-                && !_ready.ContainsKey(proof.DriverId))
+            if (await RemoveOwnedAsync(proof, CancellationToken.None).ConfigureAwait(false))
+            {
+                _ownership.ReleasePending(proof.DriverId);
+            }
+            else if (!_ready.ContainsKey(proof.DriverId))
             {
                 _retiring[proof.DriverId] = proof;
             }
@@ -287,6 +376,11 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         if (await PollAsync(Observe, _timeout, ct).ConfigureAwait(false) is null)
         {
             EnsureNonCherryIntact(baselineNonCherry);
+            var activeCherry = _topology.Active()
+                .Where(m => m.Cherry is not null)
+                .Select(m => $"{m.DeviceName}:#{m.Cherry!.DriverId}:pri={m.IsPrimary}")
+                .ToArray();
+            Log.Warn($"Cherry 手机屏 #{target.DriverId} 桌面上线超时（attachedName={attachedName ?? "null"}, activeCherry=[{string.Join(";", activeCherry)}]）");
             throw new PhoneScreenException(PhoneScreenErrorKind.NeverOnline);
         }
     }
@@ -325,7 +419,7 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         _ready.TryRemove(id, out _);
         try
         {
-            await SubmitAsync(monitor, state, connectionId, replace: true, ct).ConfigureAwait(false);
+            await SubmitAsync(monitor, state, connectionId, replace: true, before.KnownContainers, ct).ConfigureAwait(false);
             var next = await CompleteArrivalAsync(monitor, fit, before, baselineNonCherry, ct, old.Target.ContainerId).ConfigureAwait(false);
             if (next != old.Target)
                 _ownership.Release(old.Target);
@@ -333,7 +427,10 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
         catch
         {
             if (_topology.Online(old.Target) is { } previous && WidthIn(old.Fit, previous) is not null)
+            {
+                _unconfirmed.Remove(id);
                 _ready[id] = old;
+            }
             else if (!await RemoveOwnedAsync(old.Target, CancellationToken.None).ConfigureAwait(false))
                 _retiring.TryAdd(id, old.Target);
             throw;
@@ -353,6 +450,8 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
             if (!_retiring.TryGetValue(displayId, out var target)) return false;
             if (!await RemoveOwnedAsync(target, ct).ConfigureAwait(false)) return false;
             _retiring.TryRemove(displayId, out _);
+            if (_unconfirmed.Count > 0)
+                await ReconcileUnconfirmedAsync(_topology.Inspect(), await DriverStateAsync(ct).ConfigureAwait(false), ct).ConfigureAwait(false);
             _topology.RestoreCursorIfStranded();
             return true;
         }
@@ -393,6 +492,8 @@ public sealed class PhoneDisplayService : IPhoneDisplays, IAsyncDisposable
     }
 
     public ScreenFit? FitOf(uint displayId) => Confirmed(displayId)?.Fit;
+
+    public DateTimeOffset? OnlineAtOf(uint displayId) => _ready.TryGetValue(displayId, out var screen) ? screen.OnlineAt : null;
 
     public bool IsOnline(uint displayId)
     {

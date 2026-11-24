@@ -29,12 +29,14 @@ function Test-ExistingDriver {
     if (Test-Path $rootKey) {
         foreach ($sub in Get-ChildItem $rootKey -ErrorAction SilentlyContinue) {
             $props = Get-ItemProperty $sub.PSPath -ErrorAction SilentlyContinue
-            if ($props.DeviceDesc -like "*Virtual Display*" -or $props.Mfg -like "*Cherry*") {
+            $isCherryOrVdd = ($props.Mfg -like "*Cherry*") -or ($props.DeviceDesc -like "*Cherry*") -or (($props.DeviceDesc -like "*;Virtual Display") -and ($props.Mfg -notlike "*HW*"))
+            if ($isCherryOrVdd) {
                 $hasDevice = $true
                 break
             }
         }
     }
+    if ($pipeExists) { $hasDevice = $true }
     [pscustomobject]@{
         HasDevice = $hasDevice
         ServiceStatus = if ($svc) { $svc.Status.ToString() } else { "NotInstalled" }
@@ -105,7 +107,66 @@ switch ($Action) {
             Set-Content -Path $OwnershipPath -Value $marker -Encoding UTF8
         }
 
-        if ($before.HasDevice -and $before.PipeAvailable) {
+        function Wait-DriverPipe {
+            param([int]$Seconds = 8)
+            $deadline = (Get-Date).AddSeconds($Seconds)
+            while ((Get-Date) -lt $deadline) {
+                if ((Test-ExistingDriver).PipeAvailable) {
+                    return $true
+                }
+                Start-Sleep -Milliseconds 300
+            }
+            return $false
+        }
+
+        function Get-VddRootNodes {
+            return @(Get-PnpDevice -Class Display -ErrorAction SilentlyContinue |
+                Where-Object { $_.HardwareID -contains "Root\VirtualDisplayDriver" })
+        }
+
+        function Invoke-ForceBindVddInf {
+            param([string]$InfPath)
+            if (-not (Test-Path $InfPath)) { return $false }
+            $nodes = Get-VddRootNodes
+            if (-not $nodes -or $nodes.Count -eq 0) { return $false }
+
+            if (-not ("SnugVddNewDev" -as [type])) {
+                Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class SnugVddNewDev {
+    [DllImport("newdev.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern bool UpdateDriverForPlugAndPlayDevicesW(
+        IntPtr hwndParent,
+        string HardwareId,
+        string FullInfPath,
+        uint InstallFlags,
+        [MarshalAs(UnmanagedType.Bool)] out bool bRebootRequired);
+}
+"@
+            }
+
+            Write-Host "尝试通过 newdev.dll (INSTALLFLAG_FORCE) 强制将 Root\VirtualDisplayDriver 绑定到 $InfPath..."
+            [bool]$rebootRequired = $false
+            $ok = [SnugVddNewDev]::UpdateDriverForPlugAndPlayDevicesW(
+                [IntPtr]::Zero,
+                "Root\VirtualDisplayDriver",
+                $InfPath,
+                [uint32]1,
+                [ref]$rebootRequired)
+            if (-not $ok) {
+                $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                Write-Warning "UpdateDriverForPlugAndPlayDevicesW 返回 false (Win32Error=$err)"
+                return $false
+            }
+            if ($rebootRequired) {
+                Write-Host "驱动强制绑定完成（系统提示可能需要重启生效）。"
+            }
+            return $true
+        }
+
+        if ($before.PipeAvailable) {
             Write-Host "[OK] 检测到已就绪的 virtual-display-rs 驱动与命名管道，保留现有安装。"
             exit 0
         }
@@ -118,19 +179,61 @@ switch ($Action) {
         certutil -addstore -f TrustedPublisher $CertPath | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "导入 TrustedPublisher 证书失败 ($LASTEXITCODE)" }
 
+        $driverInf = Join-Path $env:ProgramFiles "VirtualDisplayDriver\driver\VirtualDisplayDriver.inf"
+        if (Invoke-ForceBindVddInf -InfPath $driverInf) {
+            if (Wait-DriverPipe -Seconds 8) {
+                Write-Host "[OK] virtual-display-rs $ExpectedVersion 强制绑定并上线成功。"
+                exit 0
+            }
+        }
+
         Write-Host "[2/3] 安装 virtual-display-driver-$ExpectedVersion-x86_64.msi..."
         $proc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /passive /norestart" -Wait -PassThru
-        if ($proc.ExitCode -ne 0) { throw "msiexec 失败，退出码 $($proc.ExitCode)" }
+        if ($proc.ExitCode -notin 0, 3010) { throw "msiexec 失败，退出码 $($proc.ExitCode)" }
 
         Write-Host "[3/3] 校验驱动服务与命名管道..."
-        $deadline = (Get-Date).AddSeconds(15)
-        while ((Get-Date) -lt $deadline) {
-            $after = Test-ExistingDriver
-            if ($after.PipeAvailable) {
+        if (Wait-DriverPipe -Seconds 15) {
+            Write-Host "[OK] virtual-display-rs $ExpectedVersion 安装并上线成功。"
+            exit 0
+        }
+
+        if (Invoke-ForceBindVddInf -InfPath $driverInf) {
+            if (Wait-DriverPipe -Seconds 8) {
+                Write-Host "[OK] virtual-display-rs $ExpectedVersion 强制绑定并上线成功。"
+                exit 0
+            }
+        }
+
+        Write-Host "命名管道仍未就绪，尝试卸载重装 MSI 以重建根设备节点与驱动绑定..."
+        $uninstallProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/x `"$MsiPath`" /qn /norestart" -Wait -PassThru
+        if ($uninstallProc.ExitCode -notin 0, 1605, 3010) {
+            Write-Warning "msiexec /x 返回退出码 $($uninstallProc.ExitCode)，继续尝试重装..."
+        }
+        $reinstallProc = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$MsiPath`" /qn /norestart" -Wait -PassThru
+        if ($reinstallProc.ExitCode -notin 0, 3010) { throw "msiexec 修复重装失败，退出码 $($reinstallProc.ExitCode)" }
+
+        if (Wait-DriverPipe -Seconds 15) {
+            Write-Host "[OK] virtual-display-rs $ExpectedVersion 修复重装并上线成功。"
+            exit 0
+        }
+
+        if (Invoke-ForceBindVddInf -InfPath $driverInf) {
+            if (Wait-DriverPipe -Seconds 8) {
+                Write-Host "[OK] virtual-display-rs $ExpectedVersion 强制绑定并上线成功。"
+                exit 0
+            }
+        }
+
+        $pnpDevices = Get-VddRootNodes
+        if ($pnpDevices.Count -gt 0) {
+            foreach ($dev in $pnpDevices) {
+                Write-Host "尝试重启虚拟显示设备 $($dev.InstanceId) 以激活命名管道..."
+                & pnputil /restart-device "$($dev.InstanceId)"
+            }
+            if (Wait-DriverPipe -Seconds 5) {
                 Write-Host "[OK] virtual-display-rs $ExpectedVersion 安装并上线成功。"
                 exit 0
             }
-            Start-Sleep -Milliseconds 300
         }
         Write-Warning "驱动已安装，但命名管道暂未就绪（可能需要重启 Windows 或在设备管理器重启 Cherry Virtual Display）。"
     }

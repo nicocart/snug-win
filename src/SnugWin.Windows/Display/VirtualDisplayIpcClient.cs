@@ -75,13 +75,14 @@ public sealed class VirtualDisplayIpcClient : IVirtualDisplayIpc, IVirtualDispla
     private NamedPipeClientStream? _pipe;
     private V2Receiver? _receiver;
     private long _connectionId;
+    private volatile bool _isLegacyProtocol;
 
     public VirtualDisplayIpcClient(string pipeName = DefaultPipeName)
     {
         _pipeName = pipeName;
     }
 
-    public bool IsLegacyProtocol => IsPipeConnected(_pipe) && !_pipe!.CanRead;
+    public bool IsLegacyProtocol => _isLegacyProtocol || (IsPipeConnected(_pipe) && !_pipe!.CanRead);
 
     public static bool IsDriverPipeAvailable(string pipeName = DefaultPipeName)
     {
@@ -321,12 +322,14 @@ public sealed class VirtualDisplayIpcClient : IVirtualDisplayIpc, IVirtualDispla
         try
         {
             _pipe = await ConnectAsync(PipeDirection.InOut, 1500, ct).ConfigureAwait(false);
+            _isLegacyProtocol = false;
             _receiver = new V2Receiver(_pipe);
         }
         catch (UnauthorizedAccessException)
         {
             // Only access denial is evidence of a v0.3.1 inbound pipe, not a stalled v2 driver.
             _pipe = await ConnectAsync(PipeDirection.Out, 2500, ct).ConfigureAwait(false);
+            _isLegacyProtocol = true;
             Log.Info("检测到 virtual-display-rs v0.3.x 写通道协议（PipeDirection.Out + Add）");
         }
         _connectionId++;
