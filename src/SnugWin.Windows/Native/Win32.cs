@@ -403,6 +403,9 @@ public static unsafe partial class Win32
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
     [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetThreadDpiAwarenessContext(IntPtr dpiContext);
+
+    [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetWindowsHookExW(int idHook, LowLevelMouseProc lpfn, IntPtr hMod, uint dwThreadId);
 
     [DllImport("user32.dll", SetLastError = true)]

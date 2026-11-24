@@ -24,6 +24,8 @@ public partial class CopySelectionBubbleWindow : Window
         _hideTimer.Tick += (_, _) => HideBubble();
     }
 
+    public IntPtr Handle => new System.Windows.Interop.WindowInteropHelper(this).Handle;
+
     public void ShowAtSelection(PointD selectionPoint, RectD phoneBounds, double scale, double dpiRatio)
     {
         _targetPoint = selectionPoint;

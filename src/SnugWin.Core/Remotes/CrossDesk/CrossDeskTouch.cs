@@ -124,6 +124,11 @@ public sealed class CrossDeskTouch : ITouchNormalizer
                     if (!_hasPress || _pressIsVirtual)
                         return new Normalized(before, null);
 
+                    // Windows SendInput(MOUSEEVENTF_MOVE | LEFTUP) emits a 0-pixel WM_MOUSEMOVE
+                    // right before WM_LBUTTONUP; do not treat stationary pointer noise as a drag/Hold.
+                    if (!_pressHeld && Distance(ev.Location, _pressDown.Location) <= SamePlace)
+                        return new Normalized(before, null);
+
                     if (!_pressHeld)
                     {
                         _pressHeld = true;

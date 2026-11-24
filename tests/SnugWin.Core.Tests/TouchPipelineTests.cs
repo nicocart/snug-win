@@ -3,6 +3,8 @@ using System.Collections.Generic;
 using System.Linq;
 using SnugWin.Core.PhoneScreen;
 using SnugWin.Core.Touch;
+using SnugWin.Windows.Input;
+using SnugWin.Windows.Native;
 using Xunit;
 
 namespace SnugWin.Core.Tests;
@@ -313,5 +315,58 @@ public sealed class TouchPipelineTests
 
         Assert.True(cb.IsFrontmost(pt, [(99, new RectD(0, 0, 50, 50), true), (7, new RectD(0, 22, 540, 900), false)]));
         Assert.False(cb.IsFrontmost(pt, [(99, new RectD(0, 0, 50, 50), false), (7, new RectD(0, 22, 540, 900), false)]));
+    }
+
+    [Fact]
+    public void Pipeline_CrossDeskTap_ReplaysPressAndReleaseInOrder()
+    {
+        var p = new TouchPipeline([() => new SnugWin.Core.Remotes.CrossDesk.CrossDeskTouch()]);
+
+        var move = p.Take(Ev(PointerEventKind.Move, 100, 300, 1.000), 0, [Phone]);
+        Assert.True(move.PassOriginal);
+
+        var down = p.Take(Ev(PointerEventKind.LeftDown, 100, 300, 1.001), 0, [Phone]);
+        Assert.False(down.PassOriginal);
+        Assert.IsType<TouchAction.HoldOriginal>(Assert.Single(down.Actions));
+
+        var up = p.Take(Ev(PointerEventKind.LeftUp, 100, 300, 1.050), 0, [Phone]);
+        Assert.False(up.PassOriginal);
+        Assert.Equal(3, up.Actions.Count);
+        Assert.IsType<TouchCommand.ReplayPress>(Assert.IsType<TouchAction.Perform>(up.Actions[0]).Command);
+        Assert.IsType<TouchCommand.ReplayCurrent>(Assert.IsType<TouchAction.Perform>(up.Actions[1]).Command);
+        Assert.IsType<TouchAction.DropHeld>(up.Actions[2]);
+    }
+
+    [Fact]
+    public void ReplayEchoTracker_PreservesCrossDeskExtraInfoAndConsumesEchoesCleanly()
+    {
+        const nuint crossDeskExtra = 0x4353444D; // 'CSDM'
+        var tracker = new ReplayEchoTracker();
+
+        // Fallback marker when no non-zero dwExtraInfo has been observed
+        Assert.Equal(ReplayEchoTracker.FallbackReplayMarker, tracker.CurrentReplayExtraInfo);
+        Assert.True(tracker.TryConsumeEcho(Win32.WM_LBUTTONDOWN, 100, 100, ReplayEchoTracker.FallbackReplayMarker, 1000));
+
+        // Incoming CrossDesk event arrives -> preserved for subsequent replays (PrivacyInputGuard compatibility)
+        Assert.False(tracker.TryConsumeEcho(Win32.WM_MOUSEMOVE, 3100, 950, crossDeskExtra, 1000));
+        tracker.ObserveIncomingExtraInfo(crossDeskExtra);
+        Assert.Equal(crossDeskExtra, tracker.CurrentReplayExtraInfo);
+
+        // Expect Down & Up at (3100, 950); Windows quantizes virtual desktop coordinates by ±1px
+        Assert.Equal(crossDeskExtra, tracker.ExpectClick(3100, 950, down: true, right: false, 1010));
+        Assert.Equal(crossDeskExtra, tracker.ExpectClick(3100, 950, down: false, right: false, 1020));
+
+        // Windows emits optional Move before Down, then Down, then Up (without Move)
+        Assert.True(tracker.TryConsumeEcho(Win32.WM_MOUSEMOVE, 3101, 950, crossDeskExtra, 1021));
+        Assert.True(tracker.TryConsumeEcho(Win32.WM_LBUTTONDOWN, 3101, 950, crossDeskExtra, 1022));
+        Assert.True(tracker.TryConsumeEcho(Win32.WM_LBUTTONUP, 3099, 951, crossDeskExtra, 1030));
+
+        // Subsequent tap at the exact same spot 20ms later must NOT be swallowed as a leftover Move/Down echo
+        Assert.False(tracker.TryConsumeEcho(Win32.WM_MOUSEMOVE, 3100, 950, crossDeskExtra, 1050));
+        Assert.False(tracker.TryConsumeEcho(Win32.WM_LBUTTONDOWN, 3100, 950, crossDeskExtra, 1051));
+
+        // Reset clears preserved dwExtraInfo
+        tracker.Reset();
+        Assert.Equal(ReplayEchoTracker.FallbackReplayMarker, tracker.CurrentReplayExtraInfo);
     }
 }
