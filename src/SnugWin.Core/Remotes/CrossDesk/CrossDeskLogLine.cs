@@ -22,11 +22,17 @@ public abstract record CrossDeskLogEvent
     /// <summary>Screen sharing power inhibitor released.</summary>
     public sealed record SharingEnded : CrossDeskLogEvent;
 
+    /// <summary>Inbound remote controller connected (Windows CrossDesk v1.7.7+ session signal).</summary>
+    public sealed record ControllerConnected : CrossDeskLogEvent;
+
     /// <summary>Last remote controller disconnected.</summary>
     public sealed record LastControllerLeft : CrossDeskLogEvent;
 
     /// <summary>Capturer ignored a display added after startup.</summary>
     public sealed record UnregisteredDisplayIgnored(string Name, int Index) : CrossDeskLogEvent;
+
+    /// <summary>User-session GUI attached to the Windows service persistent host.</summary>
+    public sealed record AttachedToPersistentHost : CrossDeskLogEvent;
 }
 
 /// <summary>
@@ -38,7 +44,11 @@ public sealed record CrossDeskLogLine(string Stamp, CrossDeskLogEvent Event)
     public const string StartedPhrase = "Logger initialized";
     public const string SharingBeganPhrase = "Requested display and system idle-sleep inhibition for screen sharing";
     public const string SharingEndedPhrase = "Released screen sharing power inhibitors";
+    public const string PrivacyEnablingOnConnectionReason = "reason=Enabling privacy on connection";
+    public const string SystemAudioCaptureStartedPrefix = "System audio capture started";
+    public const string LocalDisplayPrefix = "Local display [";
     public const string LastControllerLeftPhrase = "Last remote controller disconnected;";
+    public const string AttachedToPersistentHostPhrase = "GUI attached to persistent host; no second signaling login";
     public const string DxgiDisplayPrefix = "DXGI: session display slot=";
     public const string UnregisteredDisplayPrefix = "Windows capturer ignoring unregistered display after topology change:";
 
@@ -48,11 +58,23 @@ public sealed record CrossDeskLogLine(string Stamp, CrossDeskLogEvent Event)
         DxgiDisplayPrefix,
         SharingBeganPhrase,
         SharingEndedPhrase,
+        PrivacyEnablingOnConnectionReason,
+        SystemAudioCaptureStartedPrefix,
+        LocalDisplayPrefix,
         LastControllerLeftPhrase,
+        AttachedToPersistentHostPhrase,
         UnregisteredDisplayPrefix
     ];
 
     private const string LoggerTag = " [crossdesk] [";
+
+    private static readonly Regex SystemAudioCaptureStartedRegex = new(
+        @"^System audio capture started(?: \(attempt \d+\))?$",
+        RegexOptions.Compiled);
+
+    private static readonly Regex LocalDisplayRegex = new(
+        @"^Local display \[\d+:[^\]]+\]$",
+        RegexOptions.Compiled);
 
     private static readonly Regex DxgiSlotRegex = new(
         @"^DXGI: session display slot=(?<slot>\d+) name='(?<name>[^']*)' available=(?<avail>true|false) bounds=\((?<x>-?\d+),(?<y>-?\d+);(?<w>\d+),(?<h>\d+)\)(?:, selected=(?<sel>true|false))?$",
@@ -142,6 +164,17 @@ public sealed record CrossDeskLogLine(string Stamp, CrossDeskLogEvent Event)
             return new CrossDeskLogEvent.SharingEnded();
         if (message.StartsWith(LastControllerLeftPhrase, StringComparison.Ordinal))
             return new CrossDeskLogEvent.LastControllerLeft();
+        if (message.Equals(AttachedToPersistentHostPhrase, StringComparison.Ordinal))
+            return new CrossDeskLogEvent.AttachedToPersistentHost();
+        if (message.StartsWith("Privacy:", StringComparison.Ordinal)
+            && message.EndsWith(PrivacyEnablingOnConnectionReason, StringComparison.Ordinal))
+            return new CrossDeskLogEvent.ControllerConnected();
+        if (message.StartsWith(SystemAudioCaptureStartedPrefix, StringComparison.Ordinal)
+            && SystemAudioCaptureStartedRegex.IsMatch(message.ToString()))
+            return new CrossDeskLogEvent.ControllerConnected();
+        if (message.StartsWith(LocalDisplayPrefix, StringComparison.Ordinal)
+            && LocalDisplayRegex.IsMatch(message.ToString()))
+            return new CrossDeskLogEvent.ControllerConnected();
 
         if (message.StartsWith(DxgiDisplayPrefix, StringComparison.Ordinal))
         {

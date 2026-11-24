@@ -160,6 +160,8 @@
                             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
                                 <Button x:Name="HeroEndNowBtn" Content="立即结束" Style="{StaticResource SecondaryButton}"
                                         Padding="10,6" FontSize="11.5" Margin="0,0,6,0" Click="OnEndSessionNowClick" Visibility="Collapsed"/>
+                                <Button x:Name="HeroRestartRemoteBtn" Content="一键重启远控" Style="{StaticResource PrimaryButton}"
+                                        Padding="11,6" FontSize="11.5" Margin="0,0,6,0" Click="OnRestartUnseenRemoteClick" Visibility="Collapsed"/>
                                 <Button x:Name="ElevateBtn" Content="提权重启" Style="{StaticResource SecondaryButton}"
                                         Padding="10,6" FontSize="11.5" Margin="0,0,6,0" Click="OnRestartElevated" Visibility="Collapsed"/>
                                 <Button x:Name="HeroReentryBtn" Content="进入手机屏" Style="{StaticResource PrimaryButton}"

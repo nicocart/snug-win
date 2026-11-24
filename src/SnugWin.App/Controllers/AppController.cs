@@ -13,6 +13,7 @@ using SnugWin.Core.Config;
 using SnugWin.Core.Persistence;
 using SnugWin.Core.PhoneScreen;
 using SnugWin.Core.Remote;
+using SnugWin.Core.Remotes.CrossDesk;
 using SnugWin.Core.Session;
 using SnugWin.Core.Support;
 using SnugWin.Core.Touch;
@@ -232,21 +233,21 @@ public sealed class AppController : ILogSink
         {
             _screenshots.Expire();
             bool wasConnected = _session.IsConnected;
-            var snugBounds = new List<(uint DisplayId, RectD Bounds)>();
+            var snugBounds = new List<(uint DisplayId, RectD Bounds, DateTimeOffset? OnlineAt)>();
             foreach (var st in _desks.AllStates.Values)
             {
                 if (st.DisplayId is { } id && _displays.BoundsOf(id) is { } b)
-                    snugBounds.Add((id, b));
+                    snugBounds.Add((id, b, _displays.OnlineAtOf(id)));
             }
 
             var (readings, activeMonitors, now) = await Task.Run(() =>
             {
                 var monitors = DisplayConfigService.GetActiveMonitors();
                 var snugInfos = new List<SnugDisplayInfo>(snugBounds.Count);
-                foreach (var (id, bounds) in snugBounds)
+                foreach (var (id, bounds, onlineAt) in snugBounds)
                 {
                     var match = monitors.FirstOrDefault(m => m.Bounds.Matches(bounds, tolerance: 2.0));
-                    snugInfos.Add(new SnugDisplayInfo(id, match?.DeviceName, bounds));
+                    snugInfos.Add(new SnugDisplayInfo(id, match?.DeviceName, bounds, onlineAt));
                 }
 
                 var sampleNow = DateTimeOffset.Now;
@@ -563,6 +564,7 @@ public sealed class AppController : ILogSink
             double scale = ScreenFit.Scale(wish.Fit.Size(logicalW));
             double dpiRatio = Math.Max(1.0, bounds.Width / Math.Max(1.0, logicalW));
             _copyBubbleWindow.ShowAtSelection(selectionEnd, bounds, scale, dpiRatio);
+            _touchHook.SetSelectionBubbleHandle(_copyBubbleWindow.Handle);
             return;
         }
     }
@@ -1095,6 +1097,37 @@ public sealed class AppController : ILogSink
         UiStateChanged?.Invoke();
     }
 
+    public async Task<(bool Ok, string Message)> RestartUnseenRemoteAsync()
+    {
+        string? target = _screensUnseenBy;
+        if (string.IsNullOrWhiteSpace(target))
+            return (false, "当前无需重启远控。");
+
+        if (!string.Equals(target, CrossDeskRemote.Identity.DisplayName, StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(target, CrossDeskRemote.Identity.LogName, StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, $"暂不支持自动重启 {target}，请手动重启。");
+        }
+
+        Log.Info($"正在一键重启 {target} 以重新识别 Snug 虚拟屏...");
+        var result = await Task.Run(() => CrossDeskHost.RestartHostAsync()).ConfigureAwait(false);
+        if (result.Ok)
+        {
+            Log.Info(result.Message);
+            _ = _dispatcher.BeginInvoke(() =>
+            {
+                OnTick();
+                NotifySummary();
+                UiStateChanged?.Invoke();
+            });
+        }
+        else
+        {
+            Log.Warn(result.Message);
+        }
+        return result;
+    }
+
     public void SetKeepScreensReady(bool on)
     {
         _config = _config.WithKeepScreensReady(on);
@@ -1382,6 +1415,7 @@ public sealed class AppController : ILogSink
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _touchHook.Dispose();
         await _desks.ShutdownAsync();
+        await _displays.CleanupOrphansAsync();
         await _displays.DisposeAsync();
         HideAndDisposeScreenshotWindows();
         _reentryWindow?.Close();

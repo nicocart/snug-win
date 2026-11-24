@@ -4,6 +4,8 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using SnugWin.Core.Remotes.CrossDesk;
@@ -15,6 +17,8 @@ namespace SnugWin.Windows.Sensing;
 /// </summary>
 public static class CrossDeskHost
 {
+    private const string ServiceName = "CrossDeskService";
+
     public static string DefaultLogDirectory => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "CrossDesk",
@@ -22,46 +26,134 @@ public static class CrossDeskHost
 
     public static string DefaultLogPath => Path.Combine(DefaultLogDirectory, "crossdesk.log");
 
-    public static bool IsInstalled()
+    public static bool IsServiceInstalled()
     {
-        if (FindRunningPid() is not null)
-            return true;
-
         try
         {
-            using var hkcuKey = Registry.CurrentUser.OpenSubKey(@"Software\CrossDesk");
-            if (hkcuKey?.GetValue("InstallDir") is string dir
-                && File.Exists(Path.Combine(dir, "CrossDesk.exe")))
-                return true;
+            using var key = Registry.LocalMachine.OpenSubKey($@"SYSTEM\CurrentControlSet\Services\{ServiceName}");
+            return key is not null;
         }
-        catch { }
-
-        if (HasUninstallEntry(Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
-            || HasUninstallEntry(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
-            || HasUninstallEntry(Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall"))
+        catch
         {
-            return true;
+            return false;
         }
-
-        string pf86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
-        if (!string.IsNullOrEmpty(pf86) && File.Exists(Path.Combine(pf86, "CrossDesk", "CrossDesk.exe")))
-            return true;
-
-        string pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
-        if (!string.IsNullOrEmpty(pf) && File.Exists(Path.Combine(pf, "CrossDesk", "CrossDesk.exe")))
-            return true;
-
-        return false;
     }
 
-    public static int? FindRunningPid()
+    public static bool IsServiceRunning()
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("crossdesk_service");
+            try
+            {
+                return procs.Length > 0;
+            }
+            finally
+            {
+                foreach (var p in procs) p.Dispose();
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool IsInstalled()
+    {
+        if (FindRunningPid() is not null || IsServiceRunning())
+            return true;
+
+        return ResolveExecutablePath() is not null;
+    }
+
+    public static string? ResolveExecutablePath()
     {
         try
         {
             var procs = Process.GetProcessesByName("CrossDesk");
             try
             {
-                return procs.Length > 0 ? procs[0].Id : null;
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        string? path = p.MainModule?.FileName;
+                        if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                            return path;
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs) p.Dispose();
+            }
+        }
+        catch { }
+
+        try
+        {
+            using var hkcuKey = Registry.CurrentUser.OpenSubKey(@"Software\CrossDesk");
+            if (hkcuKey?.GetValue("InstallDir") is string dir)
+            {
+                string candidate = Path.Combine(dir, "CrossDesk.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+        catch { }
+
+        return FindUninstallExe(Registry.LocalMachine, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+            ?? FindUninstallExe(Registry.LocalMachine, @"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall")
+            ?? FindUninstallExe(Registry.CurrentUser, @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall")
+            ?? ResolveDefaultProgramFilesExe();
+    }
+
+    private static string? ResolveDefaultProgramFilesExe()
+    {
+        foreach (var root in new[]
+                 {
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                     Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles)
+                 })
+        {
+            if (!string.IsNullOrEmpty(root))
+            {
+                string candidate = Path.Combine(root, "CrossDesk", "CrossDesk.exe");
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+        return null;
+    }
+
+    public static DateTimeOffset? OldestCrossDeskStartTime()
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("CrossDesk");
+            try
+            {
+                if (procs.Length == 0) return null;
+                DateTime? oldest = null;
+                foreach (var p in procs)
+                {
+                    try
+                    {
+                        DateTime start = p.StartTime;
+                        if (oldest is null || start < oldest.Value)
+                            oldest = start;
+                    }
+                    catch (Win32Exception)
+                    {
+                        // Elevated CrossDesk inspected from an unelevated process: don't guess.
+                        return null;
+                    }
+                    catch (InvalidOperationException)
+                    {
+                        // Process exited during enumeration.
+                    }
+                }
+                return oldest is { } dt ? new DateTimeOffset(dt) : null;
             }
             finally
             {
@@ -72,6 +164,153 @@ public static class CrossDeskHost
         {
             return null;
         }
+    }
+
+    public static async Task<(bool Ok, string Message)> RestartHostAsync(CancellationToken ct = default)
+    {
+        string? exePath = ResolveExecutablePath();
+        bool serviceInstalled = IsServiceInstalled();
+
+        if (serviceInstalled && IsServiceRunning())
+        {
+            var (stopCode, stopErr) = await RunScAsync($"stop \"{ServiceName}\"", ct).ConfigureAwait(false);
+            if (stopCode == 5) // ERROR_ACCESS_DENIED
+                return (false, "停止 CrossDeskService 需要管理员权限，请先点击「提权重启」或手动重启 CrossDesk。");
+
+            var deadline = DateTimeOffset.UtcNow.AddSeconds(5);
+            while (IsServiceRunning() && DateTimeOffset.UtcNow < deadline)
+                await Task.Delay(200, ct).ConfigureAwait(false);
+
+            if (stopCode != 0 && stopCode != 1062 && !string.IsNullOrWhiteSpace(stopErr))
+            {
+                // Non-fatal if we can still terminate remaining processes cleanly.
+            }
+        }
+
+        foreach (string procName in new[] { "CrossDesk", "crossdesk_session_helper", "crossdesk_privacy_cursor_helper" })
+        {
+            try
+            {
+                var procs = Process.GetProcessesByName(procName);
+                try
+                {
+                    foreach (var p in procs)
+                    {
+                        try
+                        {
+                            if (!p.HasExited)
+                            {
+                                p.Kill(entireProcessTree: true);
+                                p.WaitForExit(3000);
+                            }
+                        }
+                        catch (Win32Exception)
+                        {
+                            return (false, "结束高权限 CrossDesk 进程需要管理员权限，请先点击「提权重启」或手动重启 CrossDesk。");
+                        }
+                        catch (InvalidOperationException) { }
+                    }
+                }
+                finally
+                {
+                    foreach (var p in procs) p.Dispose();
+                }
+            }
+            catch { }
+        }
+
+        await Task.Delay(300, ct).ConfigureAwait(false);
+
+        if (serviceInstalled)
+        {
+            var (startCode, startErr) = await RunScAsync($"start \"{ServiceName}\"", ct).ConfigureAwait(false);
+            if (startCode != 0 && startCode != 1056) // 1056 = already running
+            {
+                return (false, $"启动 CrossDeskService 失败（退出码 {startCode}）：{startErr}".Trim());
+            }
+            await Task.Delay(400, ct).ConfigureAwait(false);
+        }
+
+        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+        {
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = exePath,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex)
+            {
+                return (false, $"启动 CrossDesk.exe 失败：{ex.Message}");
+            }
+        }
+        else if (!serviceInstalled)
+        {
+            return (false, "未找到 CrossDesk.exe 安装路径，请手动启动 CrossDesk。");
+        }
+
+        return (true, "已重启 CrossDesk，正在等待重新识别屏幕。");
+    }
+
+    private static async Task<(int ExitCode, string Error)> RunScAsync(string arguments, CancellationToken ct)
+    {
+        using var proc = Process.Start(new ProcessStartInfo
+        {
+            FileName = "sc.exe",
+            Arguments = arguments,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        });
+        if (proc is null)
+            return (-1, "无法启动 sc.exe");
+
+        string stdout = await proc.StandardOutput.ReadToEndAsync(ct).ConfigureAwait(false);
+        string stderr = await proc.StandardError.ReadToEndAsync(ct).ConfigureAwait(false);
+        await proc.WaitForExitAsync(ct).ConfigureAwait(false);
+        string combined = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
+        return (proc.ExitCode, combined.Trim());
+    }
+
+    public static int? FindRunningPid()
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("CrossDesk");
+            try
+            {
+                if (procs.Length == 0) return null;
+                int bestPid = procs[0].Id;
+                DateTime bestStart = SafeStartTime(procs[0]);
+                for (int i = 1; i < procs.Length; i++)
+                {
+                    DateTime start = SafeStartTime(procs[i]);
+                    if (start < bestStart || (start == bestStart && procs[i].Id < bestPid))
+                    {
+                        bestStart = start;
+                        bestPid = procs[i].Id;
+                    }
+                }
+                return bestPid;
+            }
+            finally
+            {
+                foreach (var p in procs) p.Dispose();
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static DateTime SafeStartTime(Process p)
+    {
+        try { return p.StartTime; }
+        catch { return DateTime.MinValue; }
     }
 
     public static bool IsProcessAlive(int pid)
@@ -92,27 +331,32 @@ public static class CrossDeskHost
         }
     }
 
-    private static bool HasUninstallEntry(RegistryKey root, string subKeyPath)
+    private static string? FindUninstallExe(RegistryKey root, string subKeyPath)
     {
         try
         {
             using var parent = root.OpenSubKey(subKeyPath);
-            if (parent is null) return false;
+            if (parent is null) return null;
             foreach (var name in parent.GetSubKeyNames())
             {
                 using var sub = parent.OpenSubKey(name);
                 if (sub is null) continue;
                 var displayName = sub.GetValue("DisplayName") as string;
                 var installLoc = sub.GetValue("InstallLocation") as string;
-                if ((!string.IsNullOrEmpty(displayName) && displayName.Contains("CrossDesk", StringComparison.OrdinalIgnoreCase))
-                    || (!string.IsNullOrEmpty(installLoc) && File.Exists(Path.Combine(installLoc, "CrossDesk.exe"))))
+                if (!string.IsNullOrEmpty(installLoc))
                 {
-                    return true;
+                    string candidate = Path.Combine(installLoc, "CrossDesk.exe");
+                    if (File.Exists(candidate)) return candidate;
+                }
+                if (!string.IsNullOrEmpty(displayName) && displayName.Contains("CrossDesk", StringComparison.OrdinalIgnoreCase))
+                {
+                    string? exe = ResolveDefaultProgramFilesExe();
+                    if (exe is not null) return exe;
                 }
             }
         }
         catch { }
-        return false;
+        return null;
     }
 
     internal static ulong? TryGetFileId(SafeFileHandle handle)

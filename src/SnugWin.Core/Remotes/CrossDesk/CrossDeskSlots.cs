@@ -15,12 +15,14 @@ public sealed record CrossDeskDisplaySlot(int Slot, string Name, bool Available,
 public sealed class CrossDeskSlots
 {
     private Dictionary<int, CrossDeskDisplaySlot>? _slots;
+    private Dictionary<int, CrossDeskDisplaySlot>? _rollbackSlots;
+    private bool _rejectedAsGui;
 
     public IReadOnlyDictionary<int, CrossDeskDisplaySlot>? Displays => _slots;
 
     public bool SawUnregisteredDisplayIgnored { get; private set; }
 
-    public string? Summary => _slots is null
+    public string? Summary => _slots is not { Count: > 0 }
         ? null
         : string.Join("、", _slots.OrderBy(kv => kv.Key).Select(kv => $"第 {kv.Key} 格 {kv.Value.Name}"));
 
@@ -36,13 +38,26 @@ public sealed class CrossDeskSlots
         switch (line.Event)
         {
             case CrossDeskLogEvent.Started:
+                if (!_rejectedAsGui && _slots is { Count: > 0 })
+                    _rollbackSlots = _slots;
                 _slots = null;
+                _rejectedAsGui = false;
                 SawUnregisteredDisplayIgnored = false;
                 break;
 
             case CrossDeskLogEvent.DisplaySlot ds:
+                if (_rejectedAsGui)
+                    break;
                 _slots ??= new Dictionary<int, CrossDeskDisplaySlot>();
                 _slots[ds.Slot] = new CrossDeskDisplaySlot(ds.Slot, ds.Name, ds.Available, ds.Bounds);
+                break;
+
+            case CrossDeskLogEvent.AttachedToPersistentHost:
+                // A GUI instance attaching to the persistent host logs its own fresh DXGI display list
+                // right before this line; revert to the underlying host's slots so newer displays are
+                // not falsely reported as reachable by the persistent host.
+                _rejectedAsGui = true;
+                _slots = _rollbackSlots is null ? null : new Dictionary<int, CrossDeskDisplaySlot>(_rollbackSlots);
                 break;
 
             case CrossDeskLogEvent.UnregisteredDisplayIgnored:
@@ -54,6 +69,8 @@ public sealed class CrossDeskSlots
     public void Reset()
     {
         _slots = null;
+        _rollbackSlots = null;
+        _rejectedAsGui = false;
         SawUnregisteredDisplayIgnored = false;
     }
 

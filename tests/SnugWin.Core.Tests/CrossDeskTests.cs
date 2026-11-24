@@ -32,7 +32,12 @@ public sealed class CrossDeskTests
             LogLine("20:25:00.000", "Last remote controller disconnected; recovering privacy, reason=connection_closed", "connection_runtime.cpp:236"),
             LogLine("20:25:09.500", "Released screen sharing power inhibitors", "screen_sharing_power.cpp:241"),
             LogLine("20:26:00.000", "Windows capturer ignoring unregistered display after topology change: display='DISPLAY3', index=2", "screen_capturer_win.cpp:400"),
-            LogLine("20:26:01.000", @"index: 0, display name: \\.\DISPLAY1, is primary: 1, bounds: (0, 0) - (1920, 1080)", "screen_capturer_wgc.cpp:120")
+            LogLine("20:26:01.000", @"index: 0, display name: \\.\DISPLAY1, is primary: 1, bounds: (0, 0) - (1920, 1080)", "screen_capturer_wgc.cpp:120"),
+            LogLine("21:01:37.431", "Privacy: state=2, overlay=false, input_blocked=false, reason=Enabling privacy on connection", "privacy_controller.cpp:64"),
+            LogLine("21:01:37.531", "System audio capture started (attempt 1)", "speaker_capture_controller.cpp:122"),
+            LogLine("21:01:38.061", "Local display [1:DISPLAY1]", "peer_event_handler.cpp:665"),
+            LogLine("21:01:38.860", "Privacy: state=5, overlay=false, input_blocked=false, reason=A visible window may overlap privacy coverage", "privacy_controller.cpp:64"),
+            LogLine("21:37:37.353", "GUI attached to persistent host; no second signaling login", "gui_runtime.cpp:388")
         };
 
         var events = lines.Select(l => CrossDeskLogLine.Parse(l)?.Event).ToArray();
@@ -63,6 +68,12 @@ public sealed class CrossDeskTests
         Assert.Equal(0, wgc.Slot);
         Assert.Equal("DISPLAY1", wgc.Name);
         Assert.Equal(new RectD(0, 0, 1920, 1080), wgc.Bounds);
+
+        Assert.IsType<CrossDeskLogEvent.ControllerConnected>(events[9]);
+        Assert.IsType<CrossDeskLogEvent.ControllerConnected>(events[10]);
+        Assert.IsType<CrossDeskLogEvent.ControllerConnected>(events[11]);
+        Assert.Null(events[12]);
+        Assert.IsType<CrossDeskLogEvent.AttachedToPersistentHost>(events[13]);
     }
 
     [Theory]
@@ -199,6 +210,32 @@ public sealed class CrossDeskTests
     }
 
     [Fact]
+    public void CrossDeskTouch_ZeroPixelDragBeforeLeftUp_StaysLeftClickNotRightClick()
+    {
+        var region = new TouchRegion(new RectD(2560, 0, 1080, 1900), 1.0);
+        var pipeline = new TouchPipeline([static () => new CrossDeskTouch()]);
+
+        var pt = new PointD(3100, 617);
+        var move = pipeline.Take(Ev(PointerEventKind.Move, pt.X, pt.Y, 1.000), 0, [region]);
+        Assert.True(move.PassOriginal);
+
+        var down = pipeline.Take(Ev(PointerEventKind.LeftDown, pt.X, pt.Y, 1.001), 0, [region]);
+        Assert.False(down.PassOriginal);
+
+        // Windows SendInput(MOVE | LEFTUP) emits a 0-pixel drag at the same coordinate right before LeftUp.
+        var zeroDrag = pipeline.Take(Ev(PointerEventKind.LeftDrag, pt.X, pt.Y, 1.050), 0, [region]);
+        Assert.True(zeroDrag.PassOriginal);
+        Assert.Empty(zeroDrag.Actions);
+
+        var up = pipeline.Take(Ev(PointerEventKind.LeftUp, pt.X, pt.Y, 1.051), 0, [region]);
+        Assert.False(up.PassOriginal);
+        var cmds = up.Actions.OfType<TouchAction.Perform>().Select(a => a.Command).ToArray();
+        Assert.Equal(2, cmds.Length);
+        Assert.IsType<TouchCommand.ReplayPress>(cmds[0]);
+        Assert.IsType<TouchCommand.ReplayCurrent>(cmds[1]);
+    }
+
+    [Fact]
     public void CrossDeskTouch_AbsoluteSlideProducesScrollAndCursorFeedPassesMoves()
     {
         var region = new TouchRegion(new RectD(0, 0, 540, 950), 1.0);
@@ -312,6 +349,195 @@ public sealed class CrossDeskTests
             var r4 = adapter.Sample(t0.AddSeconds(3), wasConnected: true, [snug2]);
             Assert.False(r4.Observation.Present);
             Assert.Null(r4.Observation.UnreachableDisplays);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void RemoteAdapter_RecognizesWindowsV177ConnectAndDisconnectAcrossMultipleSessions()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"snug-crossdesk-v177-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string logPath = Path.Combine(tempDir, "crossdesk.log");
+        try
+        {
+            // Startup sequence from Windows CrossDesk v1.7.7-20261124 (no idle-sleep inhibitor lines)
+            File.WriteAllLines(logPath,
+            [
+                LogLine("21:01:08.936", "Logger initialized", null),
+                LogLine("21:01:08.968", "Privacy: state=1, overlay=false, input_blocked=false, reason=High-band privacy screen available", "privacy_controller.cpp:64"),
+                LogLine("21:01:09.536", "Init screen capturer with 60 fps", "session_device_manager.cpp:191"),
+                LogLine("21:01:09.543", "DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true", "screen_capturer_dxgi.cpp:223"),
+                LogLine("21:01:09.543", "DXGI: session display slot=1 name='DISPLAY19' available=true bounds=(2560,0;3640,1900), selected=false", "screen_capturer_dxgi.cpp:223"),
+                LogLine("21:01:09.543", "Init screen capturer success", "session_device_manager.cpp:303"),
+                LogLine("21:01:09.543", "GUI attached to persistent host; no second signaling login", "gui_runtime.cpp:388")
+            ]);
+
+            int? currentPid = 32008;
+            var online = new[] { "DISPLAY1", "DISPLAY19" };
+            var adapter = new CrossDeskRemoteAdapter(
+                logPath,
+                findPid: () => currentPid,
+                isAlive: pid => currentPid == pid,
+                isInstalled: () => true,
+                onlineDeviceNames: () => online);
+
+            var snug1 = new SnugDisplayInfo(0, @"\\.\DISPLAY19", new RectD(2560, 0, 1080, 1900));
+            var t0 = DateTimeOffset.Now;
+
+            var idle = adapter.Sample(t0, wasConnected: false, [snug1]);
+            Assert.False(idle.Observation.Present);
+
+            void AppendLines(params string[] lines)
+            {
+                using var sw = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite));
+                foreach (var l in lines) sw.WriteLine(l);
+            }
+
+            // Connect #1: privacy-on-connect + audio capture + Local display + overlap fallback (overlay=false while still connected)
+            AppendLines(
+                LogLine("21:01:37.431", "Privacy: state=2, overlay=false, input_blocked=false, reason=Enabling privacy on connection", "privacy_controller.cpp:64"),
+                LogLine("21:01:37.531", "System audio capture started (attempt 1)", "speaker_capture_controller.cpp:122"),
+                LogLine("21:01:38.061", "Local display [1:DISPLAY1]", "peer_event_handler.cpp:665"),
+                LogLine("21:01:38.061", "Local display [2:DISPLAY19]", "peer_event_handler.cpp:665"),
+                LogLine("21:01:38.860", "Privacy: state=5, overlay=false, input_blocked=false, reason=A visible window may overlap privacy coverage", "privacy_controller.cpp:64"));
+
+            var c1 = adapter.Sample(t0.AddSeconds(1), wasConnected: false, [snug1]);
+            Assert.True(c1.Observation.Present);
+
+            // Disconnect #1: Last remote controller disconnected;
+            AppendLines(
+                LogLine("21:02:04.335", "Last remote controller disconnected; recovering privacy, reason=connection_closed", "connection_runtime.cpp:246"),
+                LogLine("21:02:06.086", "Privacy: state=0, overlay=false, input_blocked=false, reason=Privacy screen requires the unlocked Default desktop", "privacy_controller.cpp:64"),
+                LogLine("21:02:08.086", "Privacy: state=1, overlay=false, input_blocked=false, reason=High-band privacy screen available", "privacy_controller.cpp:64"));
+
+            var d1 = adapter.Sample(t0.AddSeconds(2), wasConnected: true, [snug1]);
+            Assert.False(d1.Observation.Present);
+
+            // Connect #2: without Local display lines
+            AppendLines(
+                LogLine("21:02:20.945", "Privacy: state=2, overlay=false, input_blocked=false, reason=Enabling privacy on connection", "privacy_controller.cpp:64"),
+                LogLine("21:02:21.044", "System audio capture started (attempt 1)", "speaker_capture_controller.cpp:122"),
+                LogLine("21:02:22.311", "Privacy: state=5, overlay=false, input_blocked=false, reason=A visible window may overlap privacy coverage", "privacy_controller.cpp:64"));
+
+            var c2 = adapter.Sample(t0.AddSeconds(3), wasConnected: false, [snug1]);
+            Assert.True(c2.Observation.Present);
+
+            // Disconnect #2
+            AppendLines(
+                LogLine("21:02:43.010", "Last remote controller disconnected; recovering privacy, reason=connection_closed", "connection_runtime.cpp:246"));
+
+            var d2 = adapter.Sample(t0.AddSeconds(4), wasConnected: true, [snug1]);
+            Assert.False(d2.Observation.Present);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void RemoteAdapter_AttachedGuiSlotsRollbackToPersistentHostInSameLog()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"snug-crossdesk-gui-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string logPath = Path.Combine(tempDir, "crossdesk.log");
+        try
+        {
+            // Persistent host started at 22:36:52 with only DISPLAY1.
+            // Later, a GUI window opens at 22:58:00 (after DISPLAY57 came online), logs DISPLAY57, and attaches to host.
+            File.WriteAllLines(logPath,
+            [
+                LogLine("22:36:52.000", "Logger initialized", null),
+                LogLine("22:36:52.200", "DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true", "screen_capturer_dxgi.cpp:223"),
+                LogLine("22:58:00.000", "Logger initialized", null),
+                LogLine("22:58:00.100", "DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true", "screen_capturer_dxgi.cpp:223"),
+                LogLine("22:58:00.100", "DXGI: session display slot=1 name='DISPLAY57' available=true bounds=(2560,0;540,950), selected=false", "screen_capturer_dxgi.cpp:223"),
+                LogLine("22:58:00.150", "GUI attached to persistent host; no second signaling login", "gui_runtime.cpp:388")
+            ]);
+
+            int? pid = 43652;
+            var t0 = DateTimeOffset.Now;
+            DateTimeOffset? oldestStart = t0.AddMinutes(-21);
+            var online = new[] { "DISPLAY1", "DISPLAY57" };
+            var adapter = new CrossDeskRemoteAdapter(
+                logPath,
+                findPid: () => pid,
+                isAlive: p => pid == p,
+                isInstalled: () => true,
+                onlineDeviceNames: () => online,
+                oldestStartTime: () => oldestStart);
+
+            var snug57 = new SnugDisplayInfo(0, @"\\.\DISPLAY57", new RectD(2560, 0, 540, 950), OnlineAt: t0.AddSeconds(-30));
+
+            // GUI's DISPLAY57 must be rolled back to persistent host's DISPLAY1 -> DISPLAY57 is unreachable!
+            var r1 = adapter.Sample(t0, wasConnected: false, [snug57]);
+            Assert.Equal([0u], r1.Observation.UnreachableDisplays);
+            Assert.Contains("DISPLAY1", r1.Observation.Evidence);
+            Assert.DoesNotContain("DISPLAY57", r1.Observation.Evidence);
+
+            // Restart CrossDesk (new PID + fresh host startup sees DISPLAY57 without AttachedToPersistentHost)
+            pid = 51000;
+            oldestStart = t0.AddSeconds(5);
+            using (var sw = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)))
+            {
+                sw.WriteLine(LogLine("22:59:00.000", "Logger initialized", null));
+                sw.WriteLine(LogLine("22:59:00.200", "DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true", "screen_capturer_dxgi.cpp:223"));
+                sw.WriteLine(LogLine("22:59:00.200", "DXGI: session display slot=1 name='DISPLAY57' available=true bounds=(2560,0;540,950), selected=false", "screen_capturer_dxgi.cpp:223"));
+            }
+
+            var r2 = adapter.Sample(t0.AddSeconds(6), wasConnected: false, [snug57]);
+            Assert.NotNull(r2.Observation.UnreachableDisplays);
+            Assert.Empty(r2.Observation.UnreachableDisplays!);
+        }
+        finally
+        {
+            try { Directory.Delete(tempDir, recursive: true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void RemoteAdapter_OldestCrossDeskStartTimeBeforeOnlineAtMarksDisplayUnreachable()
+    {
+        string tempDir = Path.Combine(Path.GetTempPath(), $"snug-crossdesk-time-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        string logPath = Path.Combine(tempDir, "crossdesk.log");
+        try
+        {
+            // Log only contains a GUI attach block (host startup rotated out), so slot map is null.
+            File.WriteAllLines(logPath,
+            [
+                LogLine("22:58:00.000", "Logger initialized", null),
+                LogLine("22:58:00.100", "DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true", "screen_capturer_dxgi.cpp:223"),
+                LogLine("22:58:00.100", "DXGI: session display slot=1 name='DISPLAY57' available=true bounds=(2560,0;540,950), selected=false", "screen_capturer_dxgi.cpp:223"),
+                LogLine("22:58:00.150", "GUI attached to persistent host; no second signaling login", "gui_runtime.cpp:388")
+            ]);
+
+            int? pid = 43652;
+            var t0 = DateTimeOffset.Now;
+            DateTimeOffset? oldestStart = t0.AddMinutes(-20);
+            var adapter = new CrossDeskRemoteAdapter(
+                logPath,
+                findPid: () => pid,
+                isAlive: p => pid == p,
+                isInstalled: () => true,
+                onlineDeviceNames: () => ["DISPLAY1", "DISPLAY57"],
+                oldestStartTime: () => oldestStart);
+
+            var snug57 = new SnugDisplayInfo(0, @"\\.\DISPLAY57", new RectD(2560, 0, 540, 950), OnlineAt: t0.AddMinutes(-1));
+
+            // Even with null committed slots, oldestStart < OnlineAt marks display #0 unreachable.
+            var r1 = adapter.Sample(t0, wasConnected: false, [snug57]);
+            Assert.Equal([0u], r1.Observation.UnreachableDisplays);
+
+            // Once CrossDesk restarts AFTER display OnlineAt, timestamp guard clears.
+            pid = 52000;
+            oldestStart = t0.AddSeconds(5);
+            var r2 = adapter.Sample(t0.AddSeconds(6), wasConnected: false, [snug57]);
+            Assert.True(r2.Observation.UnreachableDisplays is null || r2.Observation.UnreachableDisplays.Count == 0);
         }
         finally
         {

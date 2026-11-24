@@ -21,6 +21,7 @@ public partial class SettingsWindow : Window
     private readonly Action<bool> _themeHandler;
     private bool _suppressEvents;
     private bool _isUpdating;
+    private bool _isRestartingRemote;
 
     public SettingsWindow(AppController controller, int initialTab = 0)
     {
@@ -145,10 +146,17 @@ public partial class SettingsWindow : Window
             }
 
             ElevationText.Text = _controller.IsElevated ? "管理员权限运行中" : "普通用户权限";
+            bool showRestartRemote = !_controller.IsInReconnectGrace && _controller.ScreensUnseenBy is not null;
             HeroEndNowBtn.Visibility = _controller.IsInReconnectGrace ? Visibility.Visible : Visibility.Collapsed;
+            HeroRestartRemoteBtn.Visibility = showRestartRemote ? Visibility.Visible : Visibility.Collapsed;
+            if (!_isRestartingRemote)
+            {
+                HeroRestartRemoteBtn.IsEnabled = true;
+                HeroRestartRemoteBtn.Content = "一键重启远控";
+            }
             ElevateBtn.Visibility = _controller.IsElevated ? Visibility.Collapsed : Visibility.Visible;
             HeroReentryBtn.Visibility = _controller.CanReenterPhoneScreen ? Visibility.Visible : Visibility.Collapsed;
-            HeroReadyBadge.Visibility = !_controller.CanReenterPhoneScreen && _controller.IsElevated
+            HeroReadyBadge.Visibility = !showRestartRemote && !_controller.CanReenterPhoneScreen && _controller.IsElevated
                 ? Visibility.Visible
                 : Visibility.Collapsed;
 
@@ -442,6 +450,29 @@ public partial class SettingsWindow : Window
     }
 
     private void OnEndSessionNowClick(object sender, RoutedEventArgs e) => _controller.EndSessionNow();
+
+    private async void OnRestartUnseenRemoteClick(object sender, RoutedEventArgs e)
+    {
+        if (_isRestartingRemote) return;
+        _isRestartingRemote = true;
+        HeroRestartRemoteBtn.IsEnabled = false;
+        HeroRestartRemoteBtn.Content = "重启中...";
+        try
+        {
+            var (ok, message) = await _controller.RestartUnseenRemoteAsync();
+            if (!ok)
+                System.Windows.MessageBox.Show(message, "一键重启远控", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"重启远控失败：{ex.Message}", "一键重启远控", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _isRestartingRemote = false;
+            Refresh();
+        }
+    }
 
     private void OnToggleMainScreenClick(object sender, RoutedEventArgs e)
     {

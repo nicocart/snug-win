@@ -5,7 +5,7 @@ using SnugWin.Core.Touch;
 
 namespace SnugWin.Core.Remote;
 
-public sealed record SnugDisplayInfo(uint DisplayId, string? DeviceName, RectD Bounds);
+public sealed record SnugDisplayInfo(uint DisplayId, string? DeviceName, RectD Bounds, DateTimeOffset? OnlineAt = null);
 
 public sealed record RemoteIdentity(
     string LogName,

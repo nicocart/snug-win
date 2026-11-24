@@ -23,11 +23,13 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
     private readonly CrossDeskSlots _slots = new();
     private readonly Func<bool> _isInstalled;
     private readonly Func<IReadOnlyList<string>> _onlineDeviceNames;
+    private readonly Func<DateTimeOffset?> _oldestStartTime;
 
     private int? _lastPid;
     private bool _hasObservedProcess;
     private bool _sharing;
     private bool _tailFailed;
+    private string? _lastSlotsSummary;
 
     public CrossDeskRemoteAdapter()
         : this(
@@ -35,7 +37,8 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
             findPid: CrossDeskHost.FindRunningPid,
             isAlive: CrossDeskHost.IsProcessAlive,
             isInstalled: CrossDeskHost.IsInstalled,
-            onlineDeviceNames: static () => DisplayConfigService.GetActiveMonitors().Select(m => m.DeviceName).ToArray())
+            onlineDeviceNames: static () => DisplayConfigService.GetActiveMonitors().Select(m => m.DeviceName).ToArray(),
+            oldestStartTime: CrossDeskHost.OldestCrossDeskStartTime)
     {
     }
 
@@ -44,12 +47,14 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
         Func<int?> findPid,
         Func<int, bool> isAlive,
         Func<bool> isInstalled,
-        Func<IReadOnlyList<string>> onlineDeviceNames)
+        Func<IReadOnlyList<string>> onlineDeviceNames,
+        Func<DateTimeOffset?>? oldestStartTime = null)
     {
         _processWatch = new UUProcessWatch(findPid, isAlive);
         _tail = new CrossDeskLogTail(logPath);
         _isInstalled = isInstalled;
         _onlineDeviceNames = onlineDeviceNames;
+        _oldestStartTime = oldestStartTime ?? (static () => null);
     }
 
     public RemoteIdentity Identity => CrossDeskRemote.Identity;
@@ -75,6 +80,7 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
             _lastPid = pid;
             _tail.Reset();
             _slots.Reset();
+            _lastSlotsSummary = null;
             _sharing = false;
             _tailFailed = false;
             Log.Info(pid is { } activePid ? $"CrossDesk 进程：{activePid}" : "CrossDesk 进程：没在运行");
@@ -90,7 +96,6 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
 
         try
         {
-            string? beforeSummary = _slots.Summary;
             var newLines = _tail.Poll();
             foreach (var raw in newLines)
             {
@@ -103,9 +108,11 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
                         _sharing = false;
                         break;
                     case CrossDeskLogEvent.SharingBegan:
+                    case CrossDeskLogEvent.ControllerConnected:
                         _sharing = true;
                         break;
                     case CrossDeskLogEvent.SharingEnded:
+                    case CrossDeskLogEvent.LastControllerLeft:
                         _sharing = false;
                         break;
                 }
@@ -116,10 +123,6 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
                 Log.Info("CrossDesk 日志又读得到了");
                 _tailFailed = false;
             }
-
-            string? afterSummary = _slots.Summary;
-            if (!string.IsNullOrEmpty(afterSummary) && afterSummary != beforeSummary)
-                Log.Info($"CrossDesk 各格推的屏：{afterSummary}");
         }
         catch (Exception ex)
         {
@@ -130,11 +133,31 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
             }
         }
 
-        IReadOnlySet<uint>? unreachable = null;
+        string? afterSummary = _slots.Summary;
+        if (!string.IsNullOrEmpty(afterSummary) && afterSummary != _lastSlotsSummary)
+        {
+            _lastSlotsSummary = afterSummary;
+            Log.Info($"CrossDesk 各格推的屏：{afterSummary}");
+        }
+
+        HashSet<uint>? unreachable = null;
         if (_slots.Displays is not null)
         {
             var onlineNames = _onlineDeviceNames();
-            unreachable = _slots.Unreachable(snugDisplays, onlineNames);
+            if (_slots.Unreachable(snugDisplays, onlineNames) is { } slotUnreachable)
+                unreachable = new HashSet<uint>(slotUnreachable);
+        }
+
+        if (_oldestStartTime() is { } oldestStart && snugDisplays.Count > 0)
+        {
+            foreach (var snug in snugDisplays)
+            {
+                if (snug.OnlineAt is { } onlineAt && oldestStart < onlineAt)
+                {
+                    unreachable ??= new HashSet<uint>();
+                    unreachable.Add(snug.DisplayId);
+                }
+            }
         }
 
         return new RemoteReading(
