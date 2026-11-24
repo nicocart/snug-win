@@ -12,6 +12,7 @@ using SnugWin.App.Views;
 using SnugWin.Core.Config;
 using SnugWin.Core.Persistence;
 using SnugWin.Core.PhoneScreen;
+using SnugWin.Core.Remote;
 using SnugWin.Core.Session;
 using SnugWin.Core.Support;
 using SnugWin.Core.Touch;
@@ -32,7 +33,7 @@ public sealed class AppController : ILogSink
     private readonly WindowService _windows;
     private readonly AppService _apps;
     private readonly TouchHookService _touchHook;
-    private readonly UUSensor _sensor;
+    private readonly Remotes _remotes = new();
     private readonly RemoteSession _session = new();
     private readonly DeskSet _desks;
     private readonly Screenshots _screenshots;
@@ -45,6 +46,12 @@ public sealed class AppController : ILogSink
     private DateTimeOffset _lastCatalogRefresh = DateTimeOffset.MinValue;
     private IReadOnlyList<AppInfo> _installedApps = Array.Empty<AppInfo>();
     private IReadOnlyList<RunningApp> _runningApps = Array.Empty<RunningApp>();
+    private IReadOnlyList<string> _launchOnlyRemotes = Array.Empty<string>();
+    private string? _screensUnseenBy;
+    private string? _screensWithheldBy;
+    private bool _loggedWithheld;
+    private RemoteIdentity? _lastHookOwner;
+    private bool _lastHookManual;
     private bool _catalogLoaded;
     private bool _reorderRunningApps = true;
     private bool _wasAnyListShowing;
@@ -89,7 +96,13 @@ public sealed class AppController : ILogSink
         return _config.EffectiveScreens().FirstOrDefault(s => string.Equals(s.Id, targetId, StringComparison.OrdinalIgnoreCase))
                ?? _config.PrimaryTouchScreen();
     }
-    public bool ManualOverride => _sensor.ManualOverride;
+    public bool ManualOverride => _remotes.UU.ManualOverride;
+    public bool KeepScreensReady => _config.KeepScreensReady;
+    public IReadOnlyList<string> LaunchOnlyRemotes => _launchOnlyRemotes;
+    public string? ScreensUnseenBy => _screensUnseenBy;
+    public string? ScreensWithheldBy => _screensWithheldBy;
+    public string RemoteNames => _session.Owner?.DisplayName ?? string.Join("、", _remotes.All.Select(a => a.Identity.DisplayName));
+    public IReadOnlyList<string> MainScreenRemotes => _remotes.All.Where(a => a.Identity.OpensOnMainScreen).Select(a => a.Identity.DisplayName).ToList();
     public bool CatalogLoaded => _catalogLoaded;
     public string CurrentVersion => AppUpdateService.CurrentVersion;
     public ReleasePackageKind PackageKind => AppUpdateService.CurrentPackageKind;
@@ -106,7 +119,7 @@ public sealed class AppController : ILogSink
     public bool IsElevated => new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
     public string LogDirectory => _paths.LogDirectory;
     public bool IsPhoneScreenReady => _desks.IsAnyReady;
-    public bool CanReenterPhoneScreen => (_session.InEpisode || _sensor.ManualOverride) && _desks.HasAnyDismissedTouch;
+    public bool CanReenterPhoneScreen => (_session.InEpisode || ManualOverride) && _desks.HasAnyDismissedTouch;
     public AppThemeMode ThemeMode => _config.Theme;
     public bool IsEffectiveDarkTheme => ResolveIsDarkTheme(_config.Theme);
     public IReadOnlyList<RunningApp> RunningApps => _runningApps;
@@ -137,7 +150,10 @@ public sealed class AppController : ILogSink
         _windows = new WindowService();
         _apps = new AppService(_windows);
         _touchHook = new TouchHookService();
-        _sensor = new UUSensor();
+        WindowService.SetExcludedProcesses(_remotes.AllProcessNames);
+        _touchHook.SetNormalizers(_remotes.NormalizerFactories);
+        _touchHook.SetActiveSource(0);
+        RefreshRemoteInstalls();
 
         _desks = new DeskSet(
             _displays,
@@ -216,16 +232,45 @@ public sealed class AppController : ILogSink
         {
             _screenshots.Expire();
             bool wasConnected = _session.IsConnected;
-            var (signals, now) = await Task.Run(() => _sensor.Sample(wasConnected));
+            var snugBounds = new List<(uint DisplayId, RectD Bounds)>();
+            foreach (var st in _desks.AllStates.Values)
+            {
+                if (st.DisplayId is { } id && _displays.BoundsOf(id) is { } b)
+                    snugBounds.Add((id, b));
+            }
+
+            var (readings, activeMonitors, now) = await Task.Run(() =>
+            {
+                var monitors = DisplayConfigService.GetActiveMonitors();
+                var snugInfos = new List<SnugDisplayInfo>(snugBounds.Count);
+                foreach (var (id, bounds) in snugBounds)
+                {
+                    var match = monitors.FirstOrDefault(m => m.Bounds.Matches(bounds, tolerance: 2.0));
+                    snugInfos.Add(new SnugDisplayInfo(id, match?.DeviceName, bounds));
+                }
+
+                var sampleNow = DateTimeOffset.Now;
+                var list = new List<RemoteReading>(_remotes.All.Count);
+                foreach (var adapter in _remotes.All)
+                    list.Add(adapter.Sample(sampleNow, wasConnected, snugInfos));
+                return (list, monitors, sampleNow);
+            });
             if (_shuttingDown) return;
 
-            var transitions = _session.Update(signals, now);
+            var transitions = _session.Update(readings, now);
             bool interrupted = transitions.Any(t => t is SessionTransition.Interrupted);
             bool ended = transitions.Any(t => t is SessionTransition.Ended);
+            if (ended)
+                _touchHook.RemoteEnded();
             if (interrupted || ended)
                 BringCursorHome(includePersistentMain: true);
 
-            bool remote = _session.InEpisode || _sensor.ManualOverride;
+            SyncHookNormalizerSource();
+
+            var snugIds = new HashSet<uint>(snugBounds.Select(s => s.DisplayId));
+            NoteUnseenScreens(readings, snugIds);
+
+            bool remote = _session.InEpisode || ManualOverride;
             bool inStartupGrace = now - _startedAt < StartupGracePeriod;
             if (inStartupGrace && !remote)
             {
@@ -234,10 +279,15 @@ public sealed class AppController : ILogSink
                 return;
             }
 
-            bool wantsTouch = signals.ManualOverride
+            bool seesNewScreens = !(_session.Owner?.SeesScreensOnlyAtLaunch == true && !ManualOverride);
+            var rawWishes = ScreenPlan.Wishes(_config, remote, preview: false, seesNewScreens);
+            bool wantsTouch = ManualOverride
                               || ControllerClassifier.WantsPhoneScreen(_session.EpisodeControllers(now));
-            _desks.SetWishes(ScreenPlan.ForController(ScreenPlan.Wishes(_config, remote), wantsTouch, remote));
+            _desks.SetWishes(ScreenPlan.ForController(rawWishes, wantsTouch, remote));
             _desks.SetRemote(remote);
+
+            UpdateWithheldStatus(remote, seesNewScreens);
+            KeepPointerOffPreparedScreens(activeMonitors);
 
             if ((now - _lastVerifyAt).TotalSeconds >= 2.0)
             {
@@ -263,6 +313,90 @@ public sealed class AppController : ILogSink
         {
             System.Threading.Interlocked.Exchange(ref _sampling, 0);
         }
+    }
+
+    private void SyncHookNormalizerSource()
+    {
+        var owner = _session.Owner;
+        bool manual = ManualOverride;
+        if (Equals(owner, _lastHookOwner) && manual == _lastHookManual)
+            return;
+        _lastHookOwner = owner;
+        _lastHookManual = manual;
+        _touchHook.SetActiveSource(_remotes.SourceIndexFor(owner, manual));
+    }
+
+    private void NoteUnseenScreens(IReadOnlyList<RemoteReading> readings, IReadOnlySet<uint> snugIds)
+    {
+        string? next = RemoteReading.IsBlind(readings, _session.Owner, snugIds, out var blindRemote)
+            ? blindRemote?.DisplayName
+            : null;
+        if (string.Equals(next, _screensUnseenBy, StringComparison.Ordinal))
+            return;
+
+        if (blindRemote is not null)
+        {
+            var unseen = readings.First(r => r.Identity.Equals(blindRemote)).Unseen(snugIds).OrderBy(x => x);
+            Log.Info($"{blindRemote.LogName} 看不到 Snug 的屏 {string.Join("、", unseen.Select(id => $"#{id}"))}：重启它才选得到");
+        }
+        else if (_screensUnseenBy is { } gone)
+        {
+            Log.Info($"{gone} 看得到 Snug 的屏了（或不再需要）");
+        }
+
+        _screensUnseenBy = next;
+        UiStateChanged?.Invoke();
+    }
+
+    private void UpdateWithheldStatus(bool remote, bool seesNewScreens)
+    {
+        var withheld = ScreenPlan.Withheld(_config, remote, seesNewScreens, preview: false);
+        string? next = withheld.Count > 0 ? _session.Owner?.DisplayName : null;
+        if (next is not null && !_loggedWithheld && _session.Owner is { } owner)
+        {
+            _loggedWithheld = true;
+            Log.Info($"{owner.LogName} 只在启动时认屏、没开「提前准备虚拟屏」：这次远程不建屏");
+        }
+        else if (next is null)
+        {
+            _loggedWithheld = false;
+        }
+
+        if (!string.Equals(next, _screensWithheldBy, StringComparison.Ordinal))
+        {
+            _screensWithheldBy = next;
+            UiStateChanged?.Invoke();
+        }
+    }
+
+    private void KeepPointerOffPreparedScreens(IReadOnlyList<MonitorSnapshot> activeMonitors)
+    {
+        if (_session.IsConnected || _session.InEpisode || ManualOverride || _previewHomeWindow is { IsVisible: true })
+            return;
+        if (!_config.KeepScreensReady || !_desks.IsAnyReady)
+            return;
+
+        var hiddenBounds = new List<RectD>();
+        foreach (var (screenId, st) in _desks.AllStates)
+        {
+            if (string.Equals(screenId, _config.MainScreen, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (st.DisplayId is { } did && _displays.BoundsOf(did) is { Width: > 0, Height: > 0 } b)
+                hiddenBounds.Add(b);
+        }
+        if (hiddenBounds.Count == 0)
+            return;
+
+        var visibleBounds = activeMonitors
+            .Where(m => !hiddenBounds.Any(hb => m.Bounds.Matches(hb, tolerance: 2.0)))
+            .Select(m => m.Bounds)
+            .Where(b => b.Width > 0 && b.Height > 0)
+            .ToList();
+        if (visibleBounds.Count == 0)
+            return;
+
+        if (CursorHelper.GetPosition() is { } pos && hiddenBounds.Any(hb => hb.Contains(pos)))
+            CursorHelper.KeepOff(visibleBounds);
     }
 
     private bool ShouldRefreshRunningApps(DateTimeOffset now, bool watching) =>
@@ -373,7 +507,7 @@ public sealed class AppController : ILogSink
             w.IsTouch
             && _desks.StateOf(w.Id) is { ScreenPhase: PhoneScreenPhase.Ready, ListVisible: false });
 
-        _touchHook.RequireInjectedFlag = _config.GesturesInjectedOnly && !_sensor.ManualOverride;
+        _touchHook.RequireInjectedFlag = _config.GesturesInjectedOnly && !ManualOverride;
         _touchHook.Options = new TouchOptions(
             AllowScroll: _config.GestureScroll,
             AllowRightClick: _config.GestureLongPressRightClick,
@@ -949,12 +1083,38 @@ public sealed class AppController : ILogSink
     public void EndSessionNow()
     {
         if (_session.EndNow() is null) return;
+        _touchHook.RemoteEnded();
+        SyncHookNormalizerSource();
+        _screensWithheldBy = null;
+        _loggedWithheld = false;
         BringCursorHome(includePersistentMain: true);
-        bool remote = _session.InEpisode || _sensor.ManualOverride;
-        _desks.SetWishes(ScreenPlan.ForController(ScreenPlan.Wishes(_config, remote), _sensor.ManualOverride, remote));
+        bool remote = _session.InEpisode || ManualOverride;
+        _desks.SetWishes(ScreenPlan.ForController(ScreenPlan.Wishes(_config, remote), ManualOverride, remote));
         _desks.SetRemote(_session.InEpisode);
         NotifySummary();
         UiStateChanged?.Invoke();
+    }
+
+    public void SetKeepScreensReady(bool on)
+    {
+        _config = _config.WithKeepScreensReady(on);
+        _configStore.Save(_config);
+        Log.Info($"提前准备虚拟屏 → {(on ? "开" : "关")}");
+        OnTick();
+        UiStateChanged?.Invoke();
+    }
+
+    public void RefreshRemoteInstalls()
+    {
+        var next = _remotes.All
+            .Where(a => a.Identity.SeesScreensOnlyAtLaunch && a.IsInstalled())
+            .Select(a => a.Identity.DisplayName)
+            .ToList();
+        if (!next.SequenceEqual(_launchOnlyRemotes, StringComparer.Ordinal))
+        {
+            _launchOnlyRemotes = next;
+            UiStateChanged?.Invoke();
+        }
     }
 
     public void SetMainScreen(string? screenId)
@@ -1048,7 +1208,7 @@ public sealed class AppController : ILogSink
 
     public void SetManualOverride(bool on)
     {
-        _sensor.ManualOverride = on;
+        _remotes.UU.ManualOverride = on;
         if (on) _desks.ResetCircuitBreaker();
         OnTick();
         UiStateChanged?.Invoke();
@@ -1156,6 +1316,8 @@ public sealed class AppController : ILogSink
     public string GetStatusSummary()
     {
         if (!IsDriverPipeAvailable) return "未检测到虚拟屏驱动";
+        if (_screensUnseenBy is { } unseenRemote) return $"重启 {unseenRemote} 以识别新屏幕";
+        if (_screensWithheldBy is { } withheldRemote) return $"请开启「提前准备虚拟屏」并重启 {withheldRemote}";
         var readyCount = _desks.Wishes.Count(w => _desks.StateOf(w.Id)?.ScreenPhase == PhoneScreenPhase.Ready);
         if (readyCount > 0)
         {

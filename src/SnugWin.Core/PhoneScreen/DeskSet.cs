@@ -93,7 +93,7 @@ public sealed class DeskSet
         {
             if (_desks.TryGetValue(wish.Id, out var existing))
             {
-                existing.UpdateWish(wish.Name, wish.Fit, wish.Behavior);
+                existing.UpdateWish(wish.Name, wish.Fit, wish.Behavior, wish.Prepared, wish.StaysOnDismiss);
                 existing.SetWanted(true);
             }
             else
@@ -113,7 +113,9 @@ public sealed class DeskSet
                     sharedZoomBook: _zoomBook,
                     sharedZoomFile: _zoomFile,
                     sharedLeftBehind: _leftBehind,
-                    sharedLeftBehindFile: _leftBehindFile);
+                    sharedLeftBehindFile: _leftBehindFile,
+                    prepared: wish.Prepared,
+                    staysOnDismiss: wish.StaysOnDismiss);
                 desk.StateChanged += _ => StateChanged?.Invoke();
                 desk.Gone += g => Gone?.Invoke(g);
                 desk.TopologyChanging += () => TopologyChanging?.Invoke();
@@ -140,8 +142,24 @@ public sealed class DeskSet
         {
             foreach (var desk in _desks.Values)
                 desk.DismissNotice();
+            _ = _lane.Run(EndSessionAsync);
             SettleDisplays();
         }
+    }
+
+    private async Task EndSessionAsync()
+    {
+        await Task.Yield();
+        if (_remote) return;
+        foreach (var wish in _wishes.ToList())
+        {
+            if (_remote) return;
+            if (!wish.Prepared || wish.IsMain) continue;
+            if (!_desks.TryGetValue(wish.Id, out var desk)) continue;
+            await desk.EndSessionKeepScreenAsync();
+        }
+        foreach (var desk in _desks.Values)
+            desk.DismissNotice();
     }
 
     public void ResetCircuitBreaker()
@@ -261,5 +279,13 @@ public sealed class DeskSet
         _wishes.Clear();
         foreach (var desk in list)
             await desk.ShutdownAsync().ConfigureAwait(false);
+    }
+
+    internal async Task IdleAsync()
+    {
+        await _lane.DrainAsync();
+        foreach (var desk in _desks.Values.ToList())
+            await desk.IdleAsync();
+        await _lane.DrainAsync();
     }
 }

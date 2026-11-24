@@ -33,6 +33,8 @@ public sealed record AppConfig
     public PhoneChoice Phone { get; init; } = PhoneChoice.Standard;
     public IReadOnlyList<ScreenConfig>? Screens { get; init; }
     public string? MainScreen { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool KeepScreensReady { get; init; } = false;
     public bool Welcomed { get; init; } = false;
     public string? LastVersion { get; init; }
 
@@ -148,6 +150,9 @@ public sealed record AppConfig
 
     public AppConfig WithMainScreen(string? screenId) =>
         (this with { MainScreen = screenId }).Sanitize();
+
+    public AppConfig WithKeepScreensReady(bool on) =>
+        (this with { KeepScreensReady = on }).Sanitize();
 
     public AppConfig WithScreenUpdated(string id, Func<ScreenConfig, ScreenConfig> update)
     {

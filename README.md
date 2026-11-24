@@ -8,15 +8,15 @@
 
 **让 Windows 在手机上拥有原生级的操作体验**
 
-为 UU远程 打造（Windows 版）<br>竖屏原生显示 · 原生手势 · App 资源库 · 适配所有手机 · 应用内自动更新
+已支持 **UU远程** · **CrossDesk**<br>专属虚拟屏幕 · 原生触控手势 · App 资源库 · 适配所有手机与平板 · 应用内自动更新
 
 [![最新版本](https://img.shields.io/github/v/release/nicocart/snug-win?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC&color=blue)](https://github.com/nicocart/snug-win/releases/latest) [![CI](https://github.com/nicocart/snug-win/actions/workflows/ci.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/ci.yml) [![Release](https://github.com/nicocart/snug-win/actions/workflows/release.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/release.yml) ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6) ![.NET 10 LTS](https://img.shields.io/badge/.NET-10%20LTS-512BD4) [![许可证 MIT](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-MIT-green)](LICENSE)
 
-[下载](#-下载) · [原生体验](#-原生体验) · [App 资源库](#-app-资源库) · [适配](#-适配所有-app-与手机) · [对比](#-与其他方案的对比) · [安装与更新](#-安装与更新) · [使用](#-使用方式) · [限制](#-已知限制) · [开发](#-开发)
+[下载](#-下载) · [快速上手](#-快速上手) · [原生体验](#-原生体验) · [App 资源库](#-app-资源库) · [适配](#-适配所有-app-与手机) · [对比](#-与其他方案的对比) · [安装与更新](#-安装与更新) · [限制](#-已知限制) · [开发](#-开发)
 
 </div>
 
-> 1:1 承接并完全跟随上游 macOS 原版 [**zephyr4123/snug**](https://github.com/zephyr4123/snug)（MIT License，`v2.5.0`）的产品体验、状态机与交互逻辑，专为 **Windows 10 / 11 + 网易 UU远程（GameViewer）** 打造。
+> 1:1 承接并跟随上游 macOS 原版 [**zephyr4123/snug**](https://github.com/zephyr4123/snug)（MIT License，`v2.8.0`）的产品体验、多远控适配与交互状态机，专为 **Windows 10 / 11 + 网易 UU远程 / CrossDesk** 打造。
 
 ---
 
@@ -114,7 +114,19 @@ UU远程 手机端沿用触控板鼠标逻辑；SnugWin 通过独立高优先级
 
 ## 📦 安装与更新
 
-> **系统要求**：Windows 10（2004+）/ Windows 11 x64，本机已安装 [网易 UU远程（GameViewer）](https://uuyc.163.com/)。
+## 🚀 快速上手
+
+按所用远控操作；首次设置后，日常直接连接即可。
+
+| 步骤 | UU远程（GameViewer） | CrossDesk |
+| :--- | :--- | :--- |
+| **1. 启动与准备** | 启动 SnugWin 与 UU远程 | 启动 SnugWin，在 **设置 → 多屏管理** 打开 **「提前准备虚拟屏」** 后 **重启 CrossDesk**（CrossDesk 仅在启动时识别显示器） |
+| **2. 发起连接** | 手机端 UU远程 连入本机，SnugWin 自动建出虚拟屏 | 手机端 CrossDesk 连入本机，虚拟屏已在就绪列表 |
+| **3. 切换屏幕** | 在手机端 UU远程 的屏幕列表中选择「Snug 手机屏」 | 在手机端 CrossDesk 的屏幕列表中选择「Snug 手机屏」 |
+| **4. 触控模式** | 开箱即用（自动翻译单指滑动、长按划选、长按右键） | 在手机端 CrossDesk 会话浮动按钮或设置中将 **「相对鼠标」切换为「绝对鼠标」（绝对位置）** 以启用单指滑动与惯性滚动 |
+| **5. 结束 / 退出** | 断开或「退出手机屏」后窗口归位并撤除虚拟屏（设为「常驻」除外） | 断开后自动把窗口归位回主屏并保留提前准备的屏幕（无人远程时本机鼠标无法滑入）；手机端「退出手机屏」时窗口还原、屏幕保留 |
+
+> **系统要求**：Windows 10（2004+）/ Windows 11 x64，本机已安装 [网易 UU远程（GameViewer）](https://uuyc.163.com/) 或 [CrossDesk](https://github.com/kunkundi/crossdesk)。
 
 ### 方式一：一键安装包（推荐）
 

@@ -330,6 +330,7 @@ public partial class PhoneHomeWindow : Window
             BackBtn.Visibility = Visibility.Collapsed;
         }
 
+        DismissBannerDetail.Text = st.StaysOnDismiss ? "窗口还原，屏幕保留" : "窗口还原，下次远程时恢复";
         DismissBanner.Visibility = _confirmDismiss ? Visibility.Visible : Visibility.Collapsed;
         UpdateNotice(st.Notice);
         UpdateBusyOverlay(st);
@@ -349,7 +350,7 @@ public partial class PhoneHomeWindow : Window
     {
         NoticeBanner.Visibility = Visibility.Visible;
         NoticeHeadline.Text = "本地预览模式";
-        NoticeDetail.Text = "仅演示 App 资源库、拼音搜索与机型比例，不会移动或关闭桌面窗口；连入 UU 后即可实战操控。";
+        NoticeDetail.Text = "仅演示 App 资源库、拼音搜索与机型比例，不会移动或关闭桌面窗口；连入远程后即可实战操控。";
         NoticeActionsRow.Visibility = Visibility.Collapsed;
         NoticeCloseBtn.Visibility = Visibility.Visible;
     }
@@ -437,8 +438,9 @@ public partial class PhoneHomeWindow : Window
             DeskNotice.NoNewWindow n => ($"{n.App} 无法新建窗口", "可点 App 打开已有窗口"),
             DeskNotice.NoWindow n => ($"未找到 {n.App} 的窗口", "App 已打开，但没有可显示的窗口"),
             DeskNotice.QuitStalled q => ($"{q.App} 未退出", "强制退出将丢失未存储的内容"),
-            DeskNotice.Reshaped => ("屏幕比例已调整", "在 UU远程 中切到其他屏幕再切回，点按位置才准确"),
+            DeskNotice.Reshaped => ("屏幕比例已调整", "在远控中切到其他屏幕再切回，点按位置才准确"),
             DeskNotice.ReshapeFailed => ("屏幕比例未能调整", "下次连接时生效"),
+            DeskNotice.KeptOnDismiss => ("窗口已还原", "屏幕保留，可在远控中切换屏幕"),
             DeskNotice.CircuitBreakerTripped => ("已触发建屏熔断保护", "防止屏幕闪烁，请确认驱动正常后在界面重新开启"),
             DeskNotice.ZoomLeftBehind z => ($"{z.App} 窗口已关闭", $"再打开时字号若偏大，按 {z.Steps} 次 Ctrl+- 复原"),
             _ => (string.Empty, string.Empty)

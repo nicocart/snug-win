@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using SnugWin.Core.Remote;
+using SnugWin.Core.Support;
 
 namespace SnugWin.Core.Session;
 
@@ -15,12 +17,17 @@ public abstract record SessionTransition
 
 public sealed class RemoteSession
 {
+    internal const string EndedNowLine = "会话：立即结束（不等重连窗口）";
+
     public ConnectionTracker Tracker { get; } = new();
     public SessionEpisode Episode { get; } = new();
 
     private List<string> _group = new();
     private readonly Dictionary<string, DateTimeOffset> _departed = new();
+    private readonly HashSet<string> _notedOthers = new(StringComparer.OrdinalIgnoreCase);
 
+    public RemoteIdentity? Owner { get; private set; }
+    public RemoteReading? Tracked { get; private set; }
     public DateTimeOffset? EpisodeBeganAt { get; private set; }
     public bool IsConnected => Tracker.IsConnected;
     public IReadOnlyList<string> Controllers => Tracker.Controllers;
@@ -36,20 +43,81 @@ public sealed class RemoteSession
         return _group.Concat(lingering).ToList();
     }
 
-    public IReadOnlyList<SessionTransition> Update(UUSignals signals, DateTimeOffset now)
+    public IReadOnlyList<SessionTransition> Update(IReadOnlyList<RemoteReading> readings, DateTimeOffset now)
     {
         var transitions = new List<SessionTransition>();
         if (Episode.Advance(now) == EpisodeChange.Ended)
         {
             transitions.Add(new SessionTransition.Ended());
-            _group.Clear();
-            _departed.Clear();
-            EpisodeBeganAt = null;
+            ClearEpisodeState();
         }
 
-        switch (Tracker.Update(signals, now))
+        RemoteReading? mine = Owner is { } currentOwner
+            ? readings.FirstOrDefault(r => r.Identity.Equals(currentOwner))
+            : null;
+
+        Tracked = Tracker.IsConnected
+            ? mine
+            : readings.FirstOrDefault(r => r.Observation.Present)
+              ?? mine
+              ?? (readings.Count > 0 ? readings[0] : null);
+
+        if (Tracked is { } tracked)
+            Feed(tracked, now, transitions);
+
+        foreach (var transition in transitions)
+            Log.Info(FormatTransitionLog(transition));
+
+        if (Tracker.IsConnected && Owner is { } activeOwner)
+            NoteOthers(readings, activeOwner);
+
+        return transitions;
+    }
+
+    public IReadOnlyList<SessionTransition> Update(UUSignals signals, DateTimeOffset now) =>
+        Update(new[] { new RemoteReading(UURemote.Identity, signals.ToObservation(), now) }, now);
+
+    public SessionTransition? EndNow()
+    {
+        if (Episode.EndNow() != EpisodeChange.Ended)
+            return null;
+        ClearEpisodeState();
+        Log.Info(EndedNowLine);
+        var ended = new SessionTransition.Ended();
+        Log.Info(FormatTransitionLog(ended));
+        return ended;
+    }
+
+    public void NoteSelfInducedChange(DateTimeOffset now) => Tracker.NoteSelfInducedChange(now);
+
+    internal static string OtherPresentLine(RemoteReading other, RemoteIdentity owner)
+    {
+        var evidence = string.IsNullOrEmpty(other.Observation.Evidence) ? "-" : other.Observation.Evidence;
+        return $"另有 {other.Identity.LogName} 报告连接，本次远程归 {owner.LogName}（{evidence}）";
+    }
+
+    internal static string FormatTransitionLog(SessionTransition transition)
+    {
+        static string FormatNames(IReadOnlyList<string> controllers) =>
+            controllers.Count == 0 ? "读不到名字" : string.Join("、", controllers);
+
+        return transition switch
+        {
+            SessionTransition.Began b => $"会话：开始（控制端 {FormatNames(b.Controllers)}）",
+            SessionTransition.Resumed r => $"会话：重连上，仍是同一次远程（控制端 {FormatNames(r.Controllers)}）",
+            SessionTransition.ControllersChanged c => $"会话：控制端变为 {FormatNames(c.Controllers)}",
+            SessionTransition.Interrupted => $"会话：断开，等 {(int)SessionEpisode.ReconnectWindow.TotalSeconds}s 看会不会重连",
+            SessionTransition.Ended => "会话：结束",
+            _ => transition.ToString() ?? string.Empty
+        };
+    }
+
+    private void Feed(RemoteReading reading, DateTimeOffset now, List<SessionTransition> transitions)
+    {
+        switch (Tracker.Update(reading.Observation, reading.Identity.LogName, now))
         {
             case ConnectionEvent.Connected c:
+                Owner = reading.Identity;
                 if (Episode.Connected(now) == EpisodeChange.Began)
                 {
                     EpisodeBeganAt = now;
@@ -74,21 +142,27 @@ public sealed class RemoteSession
                     transitions.Add(new SessionTransition.Interrupted());
                 break;
         }
-
-        return transitions;
     }
 
-    public SessionTransition? EndNow()
+    private void NoteOthers(IReadOnlyList<RemoteReading> readings, RemoteIdentity owner)
     {
-        if (Episode.EndNow() != EpisodeChange.Ended)
-            return null;
+        foreach (var other in readings)
+        {
+            if (other.Identity.Equals(owner) || !other.Observation.Present)
+                continue;
+            if (_notedOthers.Add(other.Identity.LogName))
+                Log.Info(OtherPresentLine(other, owner));
+        }
+    }
+
+    private void ClearEpisodeState()
+    {
         _group.Clear();
         _departed.Clear();
         EpisodeBeganAt = null;
-        return new SessionTransition.Ended();
+        Owner = null;
+        _notedOthers.Clear();
     }
-
-    public void NoteSelfInducedChange(DateTimeOffset now) => Tracker.NoteSelfInducedChange(now);
 
     private void Regroup(IReadOnlyList<string> names, DateTimeOffset now)
     {

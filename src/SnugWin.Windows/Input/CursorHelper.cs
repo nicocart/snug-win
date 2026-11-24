@@ -34,4 +34,11 @@ public static class CursorHelper
         if (CursorHome.Landing(cur, kept, main) is not { } target) return false;
         return SetCursorPos((int)System.Math.Round(target.X), (int)System.Math.Round(target.Y));
     }
+
+    public static bool KeepOff(IReadOnlyList<RectD> visible)
+    {
+        if (GetPosition() is not { } cur) return false;
+        if (CursorHome.Edge(cur, visible) is not { } target) return false;
+        return SetCursorPos((int)System.Math.Round(target.X), (int)System.Math.Round(target.Y));
+    }
 }

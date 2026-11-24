@@ -309,7 +309,7 @@
                             </Border>
                             <StackPanel Grid.Row="2" VerticalAlignment="Bottom">
                                 <TextBlock Text="自动竖屏" FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
-                                <TextBlock Text="UU 连入自动建屏归位" FontSize="11.5" Foreground="{DynamicResource TextSecondary}" Margin="0,2,0,0"/>
+                                <TextBlock Text="远程连入自动建屏归位" FontSize="11.5" Foreground="{DynamicResource TextSecondary}" Margin="0,2,0,0"/>
                             </StackPanel>
                         </Grid>
                     </CheckBox>
@@ -427,7 +427,7 @@
                               Checked="OnManualChanged" Unchecked="OnManualChanged">
                         <StackPanel>
                             <TextBlock Text="手动强制开启手机屏（测试 / 探测兜底）" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AccentSoftText}"/>
-                            <TextBlock Text="无需 UU 连入，直接生成并试用桌面侧手机工作区" FontSize="11.5" Foreground="{DynamicResource TextSecondary}" Margin="0,2,0,0"/>
+                            <TextBlock Text="无需远程连入，直接生成并试用桌面侧手机工作区" FontSize="11.5" Foreground="{DynamicResource TextSecondary}" Margin="0,2,0,0"/>
                         </StackPanel>
                     </CheckBox>
                 </Border>
@@ -474,7 +474,7 @@
                             <CheckBox x:Name="InjectedOnlyCheck" Style="{StaticResource ToggleSwitchCheckBox}"
                                       Checked="OnInjectedOnlyChanged" Unchecked="OnInjectedOnlyChanged">
                                 <StackPanel>
-                                    <TextBlock Text="仅接管 UU 注入触控事件" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+                                    <TextBlock Text="仅接管远程注入触控事件" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
                                     <TextBlock Text="保留本机物理鼠标跨入手机屏时的原生点击与拖拽手感"
                                                FontSize="11.5" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,3,0,0"/>
                                 </StackPanel>
@@ -550,7 +550,7 @@
                     <Border Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="14" Padding="16,14">
                         <StackPanel>
                             <TextBlock Text="致谢与开源许可" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,6"/>
-                            <TextBlock Text="MIT License（nicocart/snug-win），承接上游 zephyr4123/snug（v2.7.4）多屏多机型、常驻屏与交互状态机。"
+                            <TextBlock x:Name="AboutCreditText" Text="MIT License（nicocart/snug-win），承接上游 zephyr4123/snug（v2.8.0）多屏多机型、多远控适配、提前准备虚拟屏与交互状态机。"
                                        FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,4"/>
                             <TextBlock Text="虚拟屏驱动基于 MolotovCherry/virtual-display-rs（0.3.1），内置 SHA-256 与签名指纹校验。"
                                        FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,12"/>
@@ -565,6 +565,7 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
@@ -649,8 +650,21 @@
                     </ItemsControl>
                 </ScrollViewer>
 
+                <!-- Keep Screens Ready Card (for launch-only display remotes like CrossDesk) -->
+                <Border x:Name="KeepScreensReadyCard" Grid.Row="2" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}"
+                        BorderThickness="1" CornerRadius="14" Padding="14,11" Margin="0,0,0,10" Visibility="Collapsed">
+                    <CheckBox x:Name="KeepScreensReadyCheck" Style="{StaticResource ToggleSwitchCheckBox}"
+                              Click="OnKeepScreensReadyClick">
+                        <StackPanel>
+                            <TextBlock Text="提前准备虚拟屏" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+                            <TextBlock x:Name="KeepScreensReadyDetailText" Text="SnugWin 启动时即建立屏幕" FontSize="11.5"
+                                       Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                        </StackPanel>
+                    </CheckBox>
+                </Border>
+
                 <!-- Add Screen Bento Card -->
-                <Border Grid.Row="2" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}"
+                <Border Grid.Row="3" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}"
                         BorderThickness="1" CornerRadius="14" Padding="14,12">
                     <StackPanel>
                         <Grid Margin="0,0,0,9">

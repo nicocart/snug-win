@@ -44,6 +44,7 @@ public partial class SettingsWindow : Window
         _controller.UpdateStatusChanged += _updateHandler;
         _controller.LogAppended += _logHandler;
         _controller.ThemeChanged += _themeHandler;
+        Activated += (_, _) => _controller.RefreshRemoteInstalls();
         Closed += (_, _) =>
         {
             _controller.UiStateChanged -= _uiChangedHandler;
@@ -54,6 +55,7 @@ public partial class SettingsWindow : Window
 
         LogBox.Text = string.Join(Environment.NewLine, _controller.GetRecentLogs()) + Environment.NewLine;
         LogBox.ScrollToEnd();
+        _controller.RefreshRemoteInstalls();
         Refresh();
         SelectTab(initialTab);
     }
@@ -112,9 +114,12 @@ public partial class SettingsWindow : Window
             AboutVersionText.Text = $"当前版本：v{_controller.CurrentVersion}（{pkgLabel}）";
 
             StatusText.Text = _controller.GetStatusSummary();
-            StatusIndicatorDot.Fill = _controller.IsPhoneScreenReady
-                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x34, 0xD3, 0x99))
-                : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x60, 0xA5, 0xFA));
+            bool hasRemoteWarning = _controller.ScreensUnseenBy is not null || _controller.ScreensWithheldBy is not null;
+            StatusIndicatorDot.Fill = hasRemoteWarning
+                ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0xF5, 0x9E, 0x0B))
+                : (_controller.IsPhoneScreenReady
+                    ? new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x34, 0xD3, 0x99))
+                    : new System.Windows.Media.SolidColorBrush(System.Windows.Media.Color.FromRgb(0x60, 0xA5, 0xFA)));
 
             bool pipeOk = _controller.IsDriverPipeAvailable;
             DiagPipeText.Text = pipeOk
@@ -350,11 +355,48 @@ public partial class SettingsWindow : Window
         }
 
         ScreensList.ItemsSource = rows;
+        var launchOnly = _controller.LaunchOnlyRemotes;
+        bool showReadyToggle = launchOnly.Count > 0 || _controller.KeepScreensReady;
+        KeepScreensReadyCard.Visibility = showReadyToggle ? Visibility.Visible : Visibility.Collapsed;
+        KeepScreensReadyCheck.IsChecked = _controller.KeepScreensReady;
+        KeepScreensReadyDetailText.Text = launchOnly.Count == 0
+            ? "SnugWin 启动时即建立屏幕"
+            : $"SnugWin 启动时即建立屏幕；开启后需重启 {string.Join("、", launchOnly)}";
+
         AddScreenLimitHint.Text = $"{screens.Count} / {ScreenConfig.Limit}";
         bool canAdd = screens.Count < ScreenConfig.Limit;
         AddScreenFormPanel.Visibility = canAdd ? Visibility.Visible : Visibility.Collapsed;
         AddScreenFullText.Visibility = canAdd ? Visibility.Collapsed : Visibility.Visible;
         UpdateAddOrientationAvailability();
+    }
+
+    private void OnKeepScreensReadyClick(object sender, RoutedEventArgs e)
+    {
+        if (_suppressEvents) return;
+        bool currentlyOn = _controller.KeepScreensReady;
+        if (!currentlyOn)
+        {
+            _suppressEvents = true;
+            KeepScreensReadyCheck.IsChecked = false;
+            _suppressEvents = false;
+
+            var launchOnly = _controller.LaunchOnlyRemotes;
+            string names = launchOnly.Count > 0 ? string.Join("、", launchOnly) : "远控";
+            string msg =
+                $"{names} 仅在启动时识别显示器，连接后新建的屏幕无法选择。\n\n" +
+                $"开启后，已启用的虚拟屏会常驻在线（无人远程时亦在线，本机指针无法进入），远程断开后会自动把窗口还原回主屏；重启 {names} 后即可选择。";
+            var ans = System.Windows.MessageBox.Show(
+                msg,
+                "提前准备虚拟屏？",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+            if (ans == MessageBoxResult.Yes)
+                _controller.SetKeepScreensReady(true);
+        }
+        else
+        {
+            _controller.SetKeepScreensReady(false);
+        }
     }
 
     private DeviceKind SelectedAddKind()

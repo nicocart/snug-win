@@ -163,7 +163,7 @@ public partial class App : System.Windows.Application
         _trayIcon = new System.Windows.Forms.NotifyIcon
         {
             Icon = _idleTrayIcon,
-            Text = "SnugWin - UU远程手机竖屏伴侣",
+            Text = "SnugWin - 远程桌面竖屏伴侣",
             ContextMenuStrip = menu,
             Visible = true
         };
@@ -189,6 +189,7 @@ public partial class App : System.Windows.Application
     private void ShowSettings(int initialTab = 0)
     {
         if (_controller is null) return;
+        _controller.RefreshRemoteInstalls();
         if (_settingsWindow is null || !_settingsWindow.IsLoaded)
         {
             _settingsWindow = new SettingsWindow(_controller, initialTab);

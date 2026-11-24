@@ -8,15 +8,15 @@
 
 **Make Windows feel native on your phone**
 
-Built for NetEase UU Remote (GameViewer) on Windows<br>Portrait Virtual Display · Native Touch Gestures · App Library · All Phone Ratios · In-App Auto Update
+Supports **NetEase UU Remote** · **CrossDesk**<br>Dedicated Virtual Displays · Native Touch Gestures · App Library · Phone & Tablet Ratios · In-App Auto Update
 
 [![Latest Release](https://img.shields.io/github/v/release/nicocart/snug-win?label=Release&color=blue)](https://github.com/nicocart/snug-win/releases/latest) [![CI](https://github.com/nicocart/snug-win/actions/workflows/ci.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/ci.yml) [![Release Workflow](https://github.com/nicocart/snug-win/actions/workflows/release.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/release.yml) ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6) ![.NET 10 LTS](https://img.shields.io/badge/.NET-10%20LTS-512BD4) [![MIT License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
-[Download](#-download) · [Native Experience](#-native-experience) · [App Library](#-app-library) · [Install & Update](#-install--update) · [How It Works](#-usage) · [Limitations](#-known-limitations) · [Development](#-development)
+[Download](#-download) · [Quick Start](#-quick-start) · [Native Experience](#-native-experience) · [App Library](#-app-library) · [Install & Update](#-install--update) · [Development](#-development)
 
 </div>
 
-> Faithfully follows the product design, state machines, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.5.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote (GameViewer)**.
+> Faithfully follows the product design, multi-remote adapter architecture, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.8.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote / CrossDesk**.
 
 ---
 
@@ -35,6 +35,18 @@ Built for NetEase UU Remote (GameViewer) on Windows<br>Portrait Virtual Display 
 | `SnugWin-vX.Y.Z-win-x64-frameworkdependent.zip` | Minimal Size | Bundled `driver\`; requires [.NET 10 Desktop Runtime (x64)](https://dotnet.microsoft.com/download/dotnet/10.0) |
 | `virtual-display-driver-0.3.1-x64.zip` | Standalone Driver (Optional) | Standalone virtual display driver + `install-driver.cmd` (already bundled inside `setup.exe` and both portable zips) |
 | `checksums.txt` | Integrity Check | SHA-256 hashes for all release assets |
+
+---
+
+## 🚀 Quick Start
+
+| Step | UU Remote (GameViewer) | CrossDesk |
+| :--- | :--- | :--- |
+| **1. Setup** | Launch SnugWin and UU Remote | Launch SnugWin, enable **Keep Screens Ready ("提前准备虚拟屏")** under **Settings → Multi-Screen**, then **restart CrossDesk** (CrossDesk only enumerates displays at startup) |
+| **2. Connect** | Connect from your phone; SnugWin creates your virtual screen automatically | Connect from your phone; pre-created screens are already ready in CrossDesk |
+| **3. Pick Screen** | Select the Snug screen in UU Remote's display switcher | Select the Snug screen in CrossDesk's display switcher |
+| **4. Touch Mode** | Works out of the box | Switch from **Relative Mouse** to **Absolute Mouse** in CrossDesk's mobile floating menu/settings to enable native single-finger scrolling & inertia |
+| **5. End / Dismiss** | Windows restore and non-resident virtual screens retire on disconnect | Prepared screens stay online (local cursor is repelled when idle) while windows return to the primary monitor; dismissing keeps the screen alive |
 
 ---
 

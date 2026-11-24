@@ -252,7 +252,7 @@
                     <Border x:Name="DismissBanner" Visibility="Collapsed" Background="{DynamicResource PhoneCardBg}" CornerRadius="12" Padding="16" Margin="0,0,0,12">
                         <StackPanel>
                             <TextBlock Text="退出手机屏？" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource PhoneAlertRed}"/>
-                            <TextBlock Text="窗口还原，下次远程时恢复" FontSize="16" Foreground="{DynamicResource PhoneSecondaryText}" Margin="0,4,0,12"/>
+                            <TextBlock x:Name="DismissBannerDetail" Text="窗口还原，下次远程时恢复" FontSize="16" Foreground="{DynamicResource PhoneSecondaryText}" Margin="0,4,0,12"/>
                             <StackPanel Orientation="Horizontal">
                                 <Button Style="{StaticResource FlatBtn}" Margin="0,0,12,0" Click="OnCancelConfirm">
                                     <Border Height="42" CornerRadius="21" Background="{DynamicResource PhoneBg}" Padding="20,0">

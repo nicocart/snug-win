@@ -1,8 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using SnugWin.Core.Remote;
 
 namespace SnugWin.Core.Session;
+
+public static class UURemote
+{
+    public static readonly RemoteIdentity Identity = new(
+        LogName: "UU",
+        DisplayName: "UU远程",
+        ProcessNames: new[] { "GameViewer.exe", "GameViewerServer.exe", "GameViewerHealthd.exe" },
+        SeesScreensOnlyAtLaunch: false,
+        OpensOnMainScreen: true);
+}
 
 public enum ControllerKind
 {
@@ -58,6 +69,15 @@ public sealed record UUSignals(
 {
     public bool ManualOverride { get; init; }
     public bool IsPresent => ManualOverride || OverlayVisible || Controllers.Names.Count > 0 || CaptureActive == true;
+
+    public RemoteObservation ToObservation(uint? streamedDisplay = null) =>
+        new(
+            Present: IsPresent,
+            Controllers: Controllers.Names,
+            StreamedDisplay: streamedDisplay,
+            Evidence: ToString(),
+            UnreachableDisplays: null,
+            ManualOverride: ManualOverride);
 
     public override string ToString()
     {

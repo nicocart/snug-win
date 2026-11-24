@@ -16,6 +16,17 @@ public sealed record CloseButton(RectD Frame, ulong WindowHandle, RectD WindowFr
         }
         return false;
     }
+
+    public bool IsFrontmost(PointD point, IReadOnlyList<(ulong Handle, RectD Frame, bool IsPointer)> onScreen)
+    {
+        if (!Frame.Contains(point)) return false;
+        foreach (var item in onScreen)
+        {
+            if (!item.IsPointer && item.Frame.Contains(point))
+                return item.Handle == WindowHandle && item.Frame.Matches(WindowFrame);
+        }
+        return false;
+    }
 }
 
 public sealed record TouchRegion(RectD Frame, double Scale, CloseButton? CloseButton = null)
@@ -28,10 +39,31 @@ public enum TouchInputKind
 {
     Press,
     Drag,
-    Release
+    Release,
+    Recognized
 }
 
-public readonly record struct TouchInput(TouchInputKind Kind, PointD Location, double Time);
+public enum TouchGesture
+{
+    None = 0,
+    Hold = 1,
+    Slide = 2
+}
+
+public readonly record struct TouchInput(
+    TouchInputKind Kind,
+    PointD Location,
+    double Time,
+    TouchGesture Gesture = TouchGesture.None)
+{
+    public TouchInput(TouchInputKind kind, PointD location, double time)
+        : this(kind, location, time, TouchGesture.None)
+    {
+    }
+
+    public static TouchInput Recognized(TouchGesture gesture, PointD location, double time) =>
+        new(TouchInputKind.Recognized, location, time, gesture);
+}
 
 public sealed record TouchOptions(
     bool AllowScroll = true,
@@ -86,6 +118,7 @@ public struct TouchTranslator
     private double _scale;
     private bool _pressStoppedCoast;
     private bool _pressOnClose;
+    private bool _held;
 
     public bool IsCoasting => _momentum.HasValue;
     public PointD Origin => _origin;
@@ -98,6 +131,7 @@ public struct TouchTranslator
         TouchInputKind.Press => Press(input, region),
         TouchInputKind.Drag => Drag(input, options),
         TouchInputKind.Release => Release(input, options),
+        TouchInputKind.Recognized => Recognize(input.Gesture),
         _ => TouchResponse.Pass
     };
 
@@ -126,6 +160,7 @@ public struct TouchTranslator
         _scale = region.Scale <= 0 ? 1.0 : region.Scale;
         _pressStoppedCoast = stop is not null;
         _pressOnClose = region.CloseButton?.Frame.Contains(input.Location) ?? false;
+        _held = false;
         _phase = PhaseKind.Pending;
         _pendingSince = input.Time;
         _origin = input.Location;
@@ -147,7 +182,7 @@ public struct TouchTranslator
             case PhaseKind.Pending:
                 if (_origin.DistanceTo(input.Location) < Slop * _scale)
                     return TouchResponse.SwallowEmpty;
-                if (input.Time - _pendingSince >= HoldDuration || !options.AllowScroll)
+                if (_held || input.Time - _pendingSince >= HoldDuration || !options.AllowScroll)
                 {
                     _phase = PhaseKind.Selecting;
                     return TouchResponse.Swallow(new TouchCommand.ReplayPress(), new TouchCommand.ReplayCurrent());
@@ -178,7 +213,7 @@ public struct TouchTranslator
                     : TouchResponse.Pass;
             case PhaseKind.Pending:
                 _phase = PhaseKind.Idle;
-                if (input.Time - _pendingSince >= HoldDuration && options.AllowRightClick)
+                if ((_held || input.Time - _pendingSince >= HoldDuration) && options.AllowRightClick)
                     return TouchResponse.Swallow(new TouchCommand.RightClick(_origin));
                 if (_pressStoppedCoast)
                     return TouchResponse.SwallowEmpty;
@@ -193,6 +228,23 @@ public struct TouchTranslator
                 return TouchResponse.Swallow(new TouchCommand.Scroll(ended));
             default:
                 _phase = PhaseKind.Idle;
+                return TouchResponse.Pass;
+        }
+    }
+
+    private TouchResponse Recognize(TouchGesture gesture)
+    {
+        if (_phase != PhaseKind.Pending) return TouchResponse.Pass;
+        switch (gesture)
+        {
+            case TouchGesture.Hold:
+                _held = true;
+                return TouchResponse.SwallowEmpty;
+            case TouchGesture.Slide:
+                _phase = PhaseKind.Scrolling;
+                var began = _wheel.Step(0, 0, ScrollPhase.Began, MomentumPhase.None, _origin);
+                return TouchResponse.Swallow(new TouchCommand.Scroll(began));
+            default:
                 return TouchResponse.Pass;
         }
     }

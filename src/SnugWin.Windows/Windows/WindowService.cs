@@ -16,6 +16,16 @@ public sealed class WindowService : IWindowControl
 {
     private const int MoveRetries = 6;
     private const int RetryDelayMs = 120;
+    private const string SelfProcessExe = "SnugWin.App.exe";
+    private static readonly string[] DefaultExcludedProcesses =
+    {
+        SelfProcessExe,
+        "GameViewer*",
+        "CrossDesk*",
+        "crossdesk_*"
+    };
+    private static readonly object ExclusionGate = new();
+    private static string[] _excludedProcessPatterns = DefaultExcludedProcesses;
 
     public Task<bool> ExistsAsync(WindowKey window)
     {
@@ -235,6 +245,8 @@ public sealed class WindowService : IWindowControl
         {
             if (!Win32.IsWindowVisible(hwnd) || Win32.IsIconic(hwnd))
                 return true;
+            if (IsExcludedOverlayClass(Win32.GetWindowClass(hwnd)))
+                return true;
             if (Win32.GetWindowRect(hwnd, out var rc) && rc.Width > 1 && rc.Height > 1)
                 list.Add(((ulong)hwnd, new RectD(rc.Left, rc.Top, rc.Width, rc.Height)));
             return true;
@@ -269,7 +281,7 @@ public sealed class WindowService : IWindowControl
                 metaCache[pid] = meta;
             }
 
-            // Skip SnugWin and GameViewer system processes
+            // Skip SnugWin and registered remote control processes
             if (IsExcludedApp(meta.AppId)) return true;
 
             results.Add(new WindowInfo(new WindowKey(pid, (ulong)hwnd), meta.Name, meta.AppId, title, minimized));
@@ -279,11 +291,64 @@ public sealed class WindowService : IWindowControl
         return results;
     }
 
+    public static void SetExcludedProcesses(IEnumerable<string> processNames)
+    {
+        var updated = new List<string> { SelfProcessExe };
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { SelfProcessExe };
+        foreach (string raw in processNames)
+        {
+            string trimmed = raw?.Trim() ?? string.Empty;
+            if (trimmed.Length == 0) continue;
+            if (seen.Add(trimmed))
+                updated.Add(trimmed);
+        }
+
+        lock (ExclusionGate)
+        {
+            _excludedProcessPatterns = updated.ToArray();
+        }
+    }
+
+    internal static void ResetExcludedProcessesToDefaults()
+    {
+        lock (ExclusionGate)
+        {
+            _excludedProcessPatterns = DefaultExcludedProcesses;
+        }
+    }
+
     internal static bool IsExcludedApp(string? appId)
     {
         if (string.IsNullOrEmpty(appId)) return false;
-        return appId.Equals("SnugWin.App.exe", StringComparison.OrdinalIgnoreCase)
-            || appId.StartsWith("GameViewer", StringComparison.OrdinalIgnoreCase);
+
+        string candidate = Path.GetFileName(appId);
+        string[] patterns;
+        lock (ExclusionGate)
+        {
+            patterns = _excludedProcessPatterns;
+        }
+
+        foreach (string pattern in patterns)
+        {
+            if (pattern.EndsWith('*'))
+            {
+                string prefix = pattern[..^1];
+                if (candidate.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            else if (candidate.Equals(pattern, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    internal static bool IsExcludedOverlayClass(string? className)
+    {
+        if (string.IsNullOrEmpty(className)) return false;
+        return className.Equals("CrossDesk.PrivacyWindow", StringComparison.OrdinalIgnoreCase)
+            || className.StartsWith("crossdesk_privacy", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool IsStandardAppWindow(IntPtr hwnd)
@@ -297,6 +362,7 @@ public sealed class WindowService : IWindowControl
         if (rc.Width <= 40 || rc.Height <= 40) return false;
 
         string cls = Win32.GetWindowClass(hwnd);
+        if (IsExcludedOverlayClass(cls)) return false;
         if (cls is "Progman" or "WorkerW" or "Shell_TrayWnd" or "Shell_SecondaryTrayWnd"
             or "Windows.UI.Core.CoreWindow" or "ApplicationFrameWindow")
         {

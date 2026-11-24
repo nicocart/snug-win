@@ -43,20 +43,21 @@ public sealed class UUSensor
     public bool ManualOverride { get; set; }
     public bool LastPeerTcpObserved { get; private set; }
 
-    public (UUSignals Signals, DateTimeOffset ObservedAt) Sample(bool wasConnected)
+    public (UUSignals Signals, DateTimeOffset ObservedAt) Sample(bool wasConnected) =>
+        Sample(wasConnected, DateTimeOffset.Now);
+
+    public (UUSignals Signals, DateTimeOffset ObservedAt) Sample(bool wasConnected, DateTimeOffset wallClock)
     {
-        var resolveAt = DateTimeOffset.Now;
-        int? serverPid = _serverWatch.Resolve(resolveAt);
-        int? clientPid = _clientWatch.Resolve(resolveAt);
+        int? serverPid = _serverWatch.Resolve(wallClock);
+        int? clientPid = _clientWatch.Resolve(wallClock);
 
         bool overlayVisible = serverPid is { } sp && HasVisibleWindow(sp);
         long? bytes = ReadStreamLogBytes(serverPid);
-        var observedAt = DateTimeOffset.Now;
-        bool? active = _streamLog.Observe(serverPid, bytes, bytes.HasValue, observedAt, wasConnected);
+        bool? active = _streamLog.Observe(serverPid, bytes, bytes.HasValue, wallClock, wasConnected);
         bool sessionActive = overlayVisible || active == true;
         var controllers = _controllers.Poll(clientPid, sessionActive);
 
-        return (new UUSignals(overlayVisible, controllers, active) { ManualOverride = ManualOverride }, observedAt);
+        return (new UUSignals(overlayVisible, controllers, active) { ManualOverride = ManualOverride }, wallClock);
     }
 
     private static bool IsProcessAlive(int pid)

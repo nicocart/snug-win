@@ -44,6 +44,7 @@ public abstract record DeskNotice
     public sealed record ReshapeFailed : DeskNotice;
     public sealed record ZoomLeftBehind(string App, int Steps) : DeskNotice;
     public sealed record CircuitBreakerTripped : DeskNotice;
+    public sealed record KeptOnDismiss : DeskNotice;
 }
 
 public abstract record DeskGone
@@ -68,6 +69,7 @@ public sealed record PhoneDeskState
     public IReadOnlySet<int> Quitting { get; init; } = new HashSet<int>();
     public IReadOnlySet<WindowKey> Closing { get; init; } = new HashSet<WindowKey>();
     public bool Dismissed { get; init; }
+    public bool StaysOnDismiss { get; init; }
     public CloseButton? CloseButton { get; init; }
 }
 
@@ -107,6 +109,7 @@ public sealed class PhoneDesk
     private PhoneDeskState _state = new();
     private bool _wanted;
     private bool _remote;
+    private bool _prepared;
     private (uint Id, double BornAt)? _display;
     private Retiring? _retiring;
     private bool _persistOwed;
@@ -131,6 +134,7 @@ public sealed class PhoneDesk
     public string ScreenId => _screenId;
     public string ScreenName => _screenName;
     public ScreenBehavior Behavior => _behavior;
+    public bool Prepared => _prepared;
     public WindowKey? PlacedWindowKey => _placement?.Window.Key;
 
     public PhoneDeskState State
@@ -166,7 +170,9 @@ public sealed class PhoneDesk
         ZoomBook? sharedZoomBook = null,
         JsonFileStore<ZoomBook>? sharedZoomFile = null,
         LeftBehindBook? sharedLeftBehind = null,
-        JsonFileStore<LeftBehindBook>? sharedLeftBehindFile = null)
+        JsonFileStore<LeftBehindBook>? sharedLeftBehindFile = null,
+        bool prepared = false,
+        bool staysOnDismiss = false)
     {
         _displays = displays;
         _windows = windows;
@@ -177,6 +183,8 @@ public sealed class PhoneDesk
         _screenId = screenId ?? Config.ScreenConfig.LegacyPhoneId;
         _screenName = string.IsNullOrWhiteSpace(screenName) ? PhoneScreenSpec.Name : screenName;
         _behavior = behavior;
+        _prepared = prepared;
+        _state = new PhoneDeskState { StaysOnDismiss = staysOnDismiss };
         _lane = sharedLane ?? new SerialLane();
         _ledger = new RestoreRecordStore<PhoneRecord>(paths.RecordFileForScreen(_screenId));
         _zoomFile = sharedZoomFile ?? new JsonFileStore<ZoomBook>(paths.ZoomBookFile);
@@ -217,6 +225,23 @@ public sealed class PhoneDesk
     public void DismissScreen()
     {
         if (!_wanted || State.Dismissed) return;
+        if (State.StaysOnDismiss)
+        {
+            Begin(new DeskWork(DeskWorkKind.Dismissing));
+            Log.Info($"手机上退出了屏（{_screenName}）：这次远程的远控只在启动时认屏，撤了再建它就选不到，只还原窗口、屏留着");
+            _ = _lane.Run(async () =>
+            {
+                try
+                {
+                    await KeepOnDismissAsync();
+                }
+                finally
+                {
+                    State = State with { Work = null };
+                }
+            });
+            return;
+        }
         State = State with { Dismissed = true, Notice = null, Work = new DeskWork(DeskWorkKind.Dismissing) };
         Log.Info("手机上退出了手机屏：放回窗口、撤屏，这次远程不再加");
         _ = _lane.Run(async () =>
@@ -269,11 +294,18 @@ public sealed class PhoneDesk
         return transferred;
     }
 
-    public void UpdateWish(string name, ScreenFit fit, ScreenBehavior behavior)
+    public void UpdateWish(
+        string name,
+        ScreenFit fit,
+        ScreenBehavior behavior,
+        bool prepared = false,
+        bool staysOnDismiss = false)
     {
         if (!string.IsNullOrWhiteSpace(name))
             _screenName = name;
         _behavior = behavior;
+        _prepared = prepared;
+        State = State with { StaysOnDismiss = staysOnDismiss };
         SetFit(fit);
     }
 
@@ -819,7 +851,8 @@ public sealed class PhoneDesk
         if (resetRebuildBudget) _offlineRebuildUsed = false;
         if (_placement is { } p) await PutBackAsync(p.Record);
         SetPlacement(null);
-        await EvacuateComputerScreenWindowsAsync();
+        if (_behavior == ScreenBehavior.Computer)
+            await EvacuateStrayWindowsAsync();
         await RetireDisplayAsync();
         foreach (var cts in _watches.Values) cts.Cancel();
         _watches.Clear();
@@ -834,14 +867,45 @@ public sealed class PhoneDesk
         };
     }
 
-    private async Task EvacuateComputerScreenWindowsAsync()
+    private async Task KeepOnDismissAsync()
     {
-        if (_behavior != ScreenBehavior.Computer || _display is not { } d) return;
-        if (_displays.BoundsOf(d.Id) is not { } bounds || _displays.MainArea() is not { } main) return;
-
-        var snapshot = await _windows.SnapshotAsync();
-        foreach (var (key, frame) in snapshot)
+        if (_placement is { } p)
+            _ = await ReturnToOriginalAsync(p);
+        await EvacuateStrayWindowsAsync();
+        await MatchWidthAsync();
+        State = State with
         {
+            ListVisible = true,
+            Notice = new DeskNotice.KeptOnDismiss()
+        };
+    }
+
+    internal async Task EndSessionKeepScreenAsync()
+    {
+        if (_remote || !_wanted || !_prepared || _display is not { } d || !_displays.IsOnline(d.Id))
+            return;
+        if (_placement is { } p)
+            _ = await ReturnToOriginalAsync(p);
+        await EvacuateStrayWindowsAsync();
+        await MatchWidthAsync();
+        State = State with { ListVisible = true };
+    }
+
+    private async Task EvacuateStrayWindowsAsync()
+    {
+        if (_display is not { } d) return;
+        if (_displays.BoundsOf(d.Id) is not { } bounds || _displays.MainArea() is not { } main) return;
+        if (Intersects(bounds, main))
+        {
+            Log.Warn($"清场时主屏区域与虚拟屏「{_screenName}」#{d.Id} 重叠，跳过挪回");
+            return;
+        }
+
+        var placedKey = _placement?.Window.Key;
+        var snapshot = await _windows.SnapshotAsync();
+        foreach (var (key, frame) in snapshot.OrderBy(kv => kv.Key.Pid).ThenBy(kv => kv.Key.Handle))
+        {
+            if (placedKey is { } pk && key == pk) continue;
             if (!bounds.Contains(frame.Center)) continue;
             double w = Math.Min(frame.Width, main.Width);
             double h = Math.Min(frame.Height, main.Height);
@@ -850,6 +914,11 @@ public sealed class PhoneDesk
             _ = await _windows.MoveAsync(key, new RectD(x, y, w, h));
         }
     }
+
+    private static bool Intersects(RectD a, RectD b) =>
+        a.Width > 0 && a.Height > 0 && b.Width > 0 && b.Height > 0
+        && a.MinX < b.MaxX && a.MaxX > b.MinX
+        && a.MinY < b.MaxY && a.MaxY > b.MinY;
 
     private async Task RetireDisplayAsync()
     {
