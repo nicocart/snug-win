@@ -131,7 +131,7 @@ See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party attribution
 * [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (MIT License · AoyamaShou, zephyr4123, and upstream contributors including Nexmoe, 李小双, 11ze) for original product design, multi-remote architecture, dual-screen icon concept, state machines, and device model catalog.
 * [**CrossDesk**](https://github.com/kunkundi/crossdesk) (GPL-3.0) for free open-source remote access; SnugWin interacts strictly via observable behavior and contains none of its code.
 * [**MolotovCherry/virtual-display-rs**](https://github.com/MolotovCherry/virtual-display-rs) (MIT License) for Windows IddCx virtual display driver & named-pipe IPC.
-* **Contributors**: [@WilliamLambertCN](https://github.com/WilliamLambertCN) (PR #1) and [@Jym2004](https://github.com/Jym2004) (PR #2).
+* **Contributors**: [@WilliamLambertCN](https://github.com/WilliamLambertCN) (PR #1), [@Jym2004](https://github.com/Jym2004) (PR #2), and [@orion-wh](https://github.com/orion-wh) (PR #3).
 
 ## 📄 License
 

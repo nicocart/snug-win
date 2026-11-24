@@ -221,7 +221,7 @@ dotnet publish src\SnugWin.App\SnugWin.App.csproj -c Release -r win-x64 --self-c
 * [**zephyr4123/snug**](https://github.com/zephyr4123/snug)（MIT License）：AoyamaShou 与 zephyr4123，提供全部产品理念、核心状态机模型、多远控架构（含上游贡献者 Nexmoe 的 CrossDesk 初版适配及 李小双、11ze 等社区改进）、双屏叠片图标设计及机型库数据集；
 * [**CrossDesk**](https://github.com/kunkundi/crossdesk)（GPL-3.0）：kunkundi，免费开源跨平台远控软件；SnugWin 仅按其公开日志与窗口/输入行为对接，不含其代码；
 * [**MolotovCherry/virtual-display-rs**](https://github.com/MolotovCherry/virtual-display-rs)（MIT License）：Windows IddCx 虚拟显示器驱动与命名管道服务；
-* **社区贡献者**：感谢 [@WilliamLambertCN](https://github.com/WilliamLambertCN)（PR #1：EDID 虚拟屏身份绑定、IPC 加固、固定竖屏像素与会话采样稳定性）与 [@Jym2004](https://github.com/Jym2004)（PR #2：UIA 控制端读取与离屏唤醒、桌面端筛选、虚拟屏离线恢复与超级屏让路）。
+* **社区贡献者**：感谢 [@WilliamLambertCN](https://github.com/WilliamLambertCN)（PR #1：EDID 虚拟屏身份绑定、IPC 加固、固定竖屏像素与会话采样稳定性）、[@Jym2004](https://github.com/Jym2004)（PR #2：UIA 控制端读取与离屏唤醒、桌面端筛选、虚拟屏离线恢复与超级屏让路）与 [@orion-wh](https://github.com/orion-wh)（PR #3：显示拓扑竞态与幽灵容器冲突修复、连续失败熔断器、modeset 节流与开机防闪烁）。
 
 ---
 
