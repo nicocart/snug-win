@@ -76,7 +76,7 @@ public sealed class AppService : IAppControl
         return Task.FromResult<IReadOnlyList<WindowInfo>>(matched);
     }
 
-    public Task<int?> OpenAsync(AppInfo app)
+    public async Task<int?> OpenAsync(AppInfo app)
     {
         try
         {
@@ -88,21 +88,35 @@ public sealed class AppService : IAppControl
                 UseShellExecute = true
             };
             using var proc = Process.Start(psi);
-            if (proc is not null && !proc.HasExited)
-                return Task.FromResult<int?>(proc.Id);
+            if (proc is not null)
+            {
+                // Single-instance apps (Electron/Chromium/etc.) often spawn a short-lived launcher
+                // that hands off to an existing main process within ~300ms.
+                await Task.WhenAny(proc.WaitForExitAsync(), Task.Delay(350)).ConfigureAwait(false);
+                if (!proc.HasExited)
+                    return proc.Id;
+            }
 
             if (app.AppId.Contains('!'))
-                return Task.FromResult<int?>(0);
+                return 0;
 
-            // Launcher/shell-execute might hand off to existing process; find by exe name
+            // Launcher/shell-execute handed off to an existing process; resolve main PID by exe name.
             string exeName = Path.GetFileNameWithoutExtension(app.ExecutablePath ?? app.AppId);
-            var found = Process.GetProcessesByName(exeName).FirstOrDefault();
-            return Task.FromResult<int?>(found?.Id ?? 0);
+            var procs = Process.GetProcessesByName(exeName);
+            try
+            {
+                var found = procs.FirstOrDefault(p => p.MainWindowHandle != IntPtr.Zero) ?? procs.FirstOrDefault();
+                return found?.Id;
+            }
+            finally
+            {
+                foreach (var p in procs) p.Dispose();
+            }
         }
         catch (Exception ex)
         {
             Log.Warn($"启动 {app.Name} 失败：{ex.Message}");
-            return Task.FromResult<int?>(null);
+            return null;
         }
     }
 
@@ -170,6 +184,7 @@ public sealed class AppService : IAppControl
 
     public Task<bool> IsRunningAsync(int pid)
     {
+        if (pid <= 0) return Task.FromResult(false);
         try
         {
             using var p = Process.GetProcessById(pid);

@@ -1354,7 +1354,18 @@ public sealed class PhoneDesk
                 await PlaceAsync(appeared);
                 return;
             }
-            if (!await _apps.IsRunningAsync(pid) && _timeline.Now >= exitGraceDeadline && appWindows.Count == 0)
+            bool running = await _apps.IsRunningAsync(pid);
+            if (newWindowIn is null
+                && appWindows.Count > 0
+                && ((!running && _timeline.Now >= exitGraceDeadline) || (knownPid is not null && _timeline.Now >= started + 2.0)))
+            {
+                var existing = appWindows[0];
+                Log.Info($"{app.Name}（{_timeline.Now - started:0.1}s）沿用已有窗口 {existing.Label}，放上手机屏");
+                State = State with { Work = new DeskWork(DeskWorkKind.Placing, existing.Label) };
+                await PlaceAsync(existing);
+                return;
+            }
+            if (!running && _timeline.Now >= exitGraceDeadline && appWindows.Count == 0)
             {
                 Log.Warn($"{app.Name} 打开后已退出");
                 State = State with { Notice = new DeskNotice.OpenFailed(app.Name) };

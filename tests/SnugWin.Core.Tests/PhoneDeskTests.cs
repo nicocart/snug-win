@@ -507,4 +507,52 @@ public sealed class PhoneDeskTests : IDisposable
         Assert.Equal(-2, windows.ZoomDeltaTotal);
         Assert.Null(ledger.Pending());
     }
+
+    private sealed class SingleInstanceElectronApps : IAppControl
+    {
+        public int? ExistingPid { get; set; }
+        public int LauncherPid { get; set; } = 9999;
+        public bool LauncherAlive { get; set; }
+        public IReadOnlyList<WindowInfo> Windows { get; set; } = Array.Empty<WindowInfo>();
+
+        public Task<int?> PidOfAsync(AppInfo app) => Task.FromResult(ExistingPid);
+        public Task<IReadOnlyList<int>> PidsAsync(string appId) =>
+            Task.FromResult<IReadOnlyList<int>>(ExistingPid is { } p ? [p] : []);
+        public Task<IReadOnlyList<WindowInfo>> AppWindowsAsync(AppInfo app, int? launchedPid = null) =>
+            Task.FromResult(Windows);
+        public Task<int?> OpenAsync(AppInfo app) => Task.FromResult<int?>(LauncherPid);
+        public Task<bool> NewWindowAsync(int pid) => Task.FromResult(false);
+        public Task<bool> QuitAsync(int pid) => Task.FromResult(true);
+        public Task<bool> ForceQuitAsync(int pid) => Task.FromResult(true);
+        public Task<bool> IsRunningAsync(int pid) => Task.FromResult(pid == LauncherPid ? LauncherAlive : ExistingPid == pid);
+    }
+
+    [Fact]
+    public async Task Open_SingleInstanceElectronHandoff_PlacesExistingWindowInsteadOfTimingOut()
+    {
+        var displays = new FakeDisplays();
+        var windows = new FakeWindows();
+        var timeline = new FakeTimeline();
+        var existingKey = new WindowKey(500, 0xABC);
+        windows.Frames[existingKey] = new RectD(50, 50, 1200, 800);
+        var existingWin = new WindowInfo(existingKey, "Electron", "Code.exe", "Workspace");
+        var apps = new SingleInstanceElectronApps
+        {
+            ExistingPid = 500,
+            LauncherPid = 9999,
+            LauncherAlive = false,
+            Windows = [existingWin]
+        };
+
+        var desk = new PhoneDesk(displays, windows, apps, _paths, timeline);
+        desk.SetWanted(true);
+        await desk.IdleAsync();
+
+        desk.Open(new AppInfo("Code.exe", "Electron", @"C:\Apps\Code.exe"));
+        await desk.IdleAsync();
+
+        Assert.NotNull(desk.State.Placed);
+        Assert.Equal(existingKey, desk.State.Placed!.Window.Key);
+        Assert.Null(desk.State.Notice);
+    }
 }
