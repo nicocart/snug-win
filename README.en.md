@@ -6,9 +6,9 @@
 
 # SnugWin
 
-**Make Windows feel native on your phone**
+**Make Windows feel native on your phone and tablet**
 
-Supports **NetEase UU Remote** · **CrossDesk**<br>Dedicated Virtual Displays · Native Touch Gestures · App Library · Phone & Tablet Ratios · In-App Auto Update
+Supports **NetEase UU Remote** · **CrossDesk**<br>Up to 4 Dedicated Virtual Displays (Phone / Tablet / Computer) · Native Touch Gestures · App Library · In-App Auto Update
 
 [![Latest Release](https://img.shields.io/github/v/release/nicocart/snug-win?label=Release&color=blue)](https://github.com/nicocart/snug-win/releases/latest) [![CI](https://github.com/nicocart/snug-win/actions/workflows/ci.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/ci.yml) [![Release Workflow](https://github.com/nicocart/snug-win/actions/workflows/release.yml/badge.svg)](https://github.com/nicocart/snug-win/actions/workflows/release.yml) ![Windows 10/11 x64](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-0078D6) ![.NET 10 LTS](https://img.shields.io/badge/.NET-10%20LTS-512BD4) [![MIT License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
@@ -16,7 +16,12 @@ Supports **NetEase UU Remote** · **CrossDesk**<br>Dedicated Virtual Displays ·
 
 </div>
 
-> Faithfully follows the product design, multi-remote adapter architecture, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.8.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote / CrossDesk**.
+> [!IMPORTANT]
+> **New: CrossDesk**: [CrossDesk](https://github.com/kunkundi/crossdesk), a free and open-source remote desktop app, is now supported with the same virtual displays, native gestures, and App Library as UU Remote. See [Quick Start](#-quick-start).
+>
+> **For UU Remote VIP members**: from December 1, 2026, UU Remote moves multi-display and virtual display features to VIP. SnugWin works with UU Remote VIP as well as free CrossDesk; it is an independent community project with no commercial ties to UU Remote.
+
+> Faithfully follows the product design, multi-screen & multi-remote adapter architecture, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.8.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote / CrossDesk**.
 
 ---
 
@@ -42,28 +47,29 @@ Supports **NetEase UU Remote** · **CrossDesk**<br>Dedicated Virtual Displays ·
 
 | Step | UU Remote (GameViewer) | CrossDesk |
 | :--- | :--- | :--- |
-| **1. Setup** | Launch SnugWin and UU Remote | Launch SnugWin, enable **Keep Screens Ready ("提前准备虚拟屏")** under **Settings → Multi-Screen**, then **restart CrossDesk** (CrossDesk only enumerates displays at startup) |
+| **1. Setup** | Launch SnugWin and UU Remote | Launch SnugWin, enable **Keep Screens Ready ("提前准备虚拟屏")** under **Settings → Multi-Screen**, then click **"一键重启远控" (One-Click Restart Remote)** in the Settings banner (or restart `CrossDeskService` and CrossDesk, since CrossDesk enumerates displays only at startup) |
 | **2. Connect** | Connect from your phone; SnugWin creates your virtual screen automatically | Connect from your phone; pre-created screens are already ready in CrossDesk |
 | **3. Pick Screen** | Select the Snug screen in UU Remote's display switcher | Select the Snug screen in CrossDesk's display switcher |
-| **4. Touch Mode** | Works out of the box | Switch from **Relative Mouse** to **Absolute Mouse** in CrossDesk's mobile floating menu/settings to enable native single-finger scrolling & inertia |
+| **4. Touch Mode** | Works out of the box | Switch from **Relative Mouse** to **Absolute Mouse** in CrossDesk's mobile floating menu/settings to enable native single-finger scrolling & inertia (works even with CrossDesk's privacy input guard active) |
 | **5. End / Dismiss** | Windows restore and non-resident virtual screens retire on disconnect | Prepared screens stay online (local cursor is repelled when idle) while windows return to the primary monitor; dismissing keeps the screen alive |
 
 ---
 
 ## ✨ Native Experience
 
-UU Remote scales your entire desktop into a tiny phone viewport. SnugWin spins up a dedicated portrait virtual display whenever your phone connects so Windows windows fill the screen at true mobile scale.
+Remote desktop apps scale your entire desktop into a tiny mobile viewport. SnugWin provisions dedicated virtual displays (up to **4 configurable Phone / Tablet / Computer screens**, including resident screens) so Windows windows fill your device at true native scale.
 
-### Portrait Display & Window Fitting
+### Multi-Screen Display & Window Fitting
 
-* **Dedicated Portrait Screen**: Multi-signal UU session sensing (GameViewer overlay, UIA controller table, continuous `GameViewerServer` streamer-log growth) creates a 200% DPI virtual portrait monitor (`virtual-display-rs`) matched to your phone aspect ratio.
-* **DWM-Compensated Fit**: Placed windows snap cleanly edge-to-edge on the phone screen without invisible drop-shadow margins.
+* **Multi-Remote Session Sensing**: Multi-signal **UU Remote** detection (GameViewer overlay, UIA controller table, `GameViewerServer` streamer-log growth) and **CrossDesk** detection (`crossdesk.log` + `CrossDeskService` persistent host tracking) manage `virtual-display-rs` monitors via EDID ownership (`OwnedDisplayBook`).
+* **Up to 4 Virtual Screens & Keep Ready**: Configure Phone, Tablet, and Computer screens under **Settings → Multi-Screen**, mark a screen as **Resident ("设为常驻屏")**, or enable **Keep Screens Ready ("提前准备虚拟屏")** for launch-only remotes like CrossDesk.
+* **DWM-Compensated Fit**: Placed windows snap cleanly edge-to-edge on the virtual screen without invisible drop-shadow margins.
 * **Remembered Terminal/Editor Zoom**: Automatically steps font zoom up for terminals, VS Code, Cursor, etc., and restores zoom + original window frames on exit or disconnect.
-* **Same-Session Re-entry**: Dismissing the phone screen during a UU session leaves a quick **"Enter Phone Screen"** pill (plus tray menu item) so you can bring it right back without reconnecting.
+* **Same-Session Re-entry**: Dismissing the phone screen during a session leaves a quick **"Enter Phone Screen"** pill (plus tray menu item) so you can bring it right back without reconnecting.
 
 ### Native Touch Gestures & Selection Toolbar
 
-| Mobile Gesture | Default UU | SnugWin Phone Screen |
+| Mobile Gesture | Default Remote | SnugWin Virtual Screen |
 | :--- | :--- | :--- |
 | Single-finger swipe | Mouse drag (selects text by mistake) | Smooth wheel scrolling with 60fps inertia |
 | Hold 0.5s then drag | Immediate drag | Clean text selection (replays exact press origin) + **`Copy \| Paste \| Delete`** floating bar |
@@ -92,7 +98,7 @@ Enable the optional camera button on the bottom home bar to capture raw pixels o
 
 ### Option 1: One-Click Installer (Recommended)
 1. Download `SnugWin-vX.Y.Z-win-x64-setup.exe` from [Releases](https://github.com/nicocart/snug-win/releases/latest) and run it.
-2. Keep **"Install or verify virtual-display-rs 0.3.1 driver"** checked (verifies SHA-256 & cert thumbprint, and records ownership in `%ProgramData%\SnugWin\driver-ownership.json` so pre-existing user drivers are never removed).
+2. Keep **"Install or verify virtual-display-rs 0.3.1 driver"** checked (verifies SHA-256 & cert thumbprint, uses `INSTALLFLAG_FORCE` if an OEM virtual display driver shares `Root\VirtualDisplayDriver`, and records ownership in `%ProgramData%\SnugWin\driver-ownership.json` so pre-existing user drivers are never removed).
 3. Optionally enable **"Launch SnugWin silently in tray when signing into Windows"**.
 
 ### Option 2: Portable Zip
@@ -108,7 +114,7 @@ Enable the optional camera button on the bottom home bar to capture raw pixels o
 ## 🔧 Development
 
 * **Stack**: C# / `.NET 10 LTS` / WPF (`PerMonitorV2`) + `Win32 / UIAutomation / CCD / WH_MOUSE_LL` + `Inno Setup 6`
-* **Architecture**: `SnugWin.Core` (platform-independent logic) → `SnugWin.Windows` (display, windowing, hooks, UU sensing, startup/updater) → `SnugWin.App` (modern dark WPF UI & tray host)
+* **Architecture**: `SnugWin.Core` (platform-independent logic, multi-remote & touch state machines) → `SnugWin.Windows` (display, windowing, hooks, UU & CrossDesk sensing, startup/updater) → `SnugWin.App` (modern dark WPF UI & tray host)
 
 ```powershell
 dotnet build SnugWin.sln -c Release -warnaserror
@@ -122,8 +128,10 @@ See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for third-party attribution
 ## 🙏 Acknowledgments
 
 * [**NetEase UU Remote (GameViewer)**](https://uuyc.163.com/) for reliable low-latency remote access.
-* [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (MIT License · AoyamaShou & zephyr4123) for original product design, dual-screen icon concept, state machines, and device model catalog.
+* [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (MIT License · AoyamaShou, zephyr4123, and upstream contributors including Nexmoe, 李小双, 11ze) for original product design, multi-remote architecture, dual-screen icon concept, state machines, and device model catalog.
+* [**CrossDesk**](https://github.com/kunkundi/crossdesk) (GPL-3.0) for free open-source remote access; SnugWin interacts strictly via observable behavior and contains none of its code.
 * [**MolotovCherry/virtual-display-rs**](https://github.com/MolotovCherry/virtual-display-rs) (MIT License) for Windows IddCx virtual display driver & named-pipe IPC.
+* **Contributors**: [@WilliamLambertCN](https://github.com/WilliamLambertCN) (PR #1) and [@Jym2004](https://github.com/Jym2004) (PR #2).
 
 ## 📄 License
 
