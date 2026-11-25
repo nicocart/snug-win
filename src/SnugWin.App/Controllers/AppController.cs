@@ -58,8 +58,12 @@ public sealed class AppController : ILogSink
     private bool _wasAnyListShowing;
     private readonly Dictionary<string, PhoneHomeWindow> _screenHomeWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, HomeBarWindow> _screenHomeBars = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ComputerTabWindow> _computerTabs = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ComputerLibraryWindow> _computerLibraries = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, PhoneDeskState> _lastSyncedScreenStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, RectD> _lastSyncedScreenBounds = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<WindowKey, WindowSpot> _windowSpots = new();
+    private Dictionary<uint, string> _displayLabels = new();
     private PhoneHomeWindow? _previewHomeWindow;
     private ScreenshotOverlayWindow? _screenshotOverlayWindow;
     private CropWindow? _cropWindow;
@@ -125,6 +129,13 @@ public sealed class AppController : ILogSink
     public bool IsEffectiveDarkTheme => ResolveIsDarkTheme(_config.Theme);
     public IReadOnlyList<RunningApp> RunningApps => _runningApps;
     public IReadOnlyList<AppInfo> InstalledApps => _installedApps;
+    public IReadOnlyDictionary<WindowKey, WindowSpot> WindowSpots => _windowSpots;
+    public bool IsLaunchOnlyOwner => _session.Owner?.SeesScreensOnlyAtLaunch == true;
+
+    public string GetDisplayLabel(uint displayId) =>
+        _displayLabels.TryGetValue(displayId, out var label) && !string.IsNullOrWhiteSpace(label)
+            ? label
+            : "其他屏幕";
 
     public event Action<string>? StateSummaryChanged;
     public event Action? UiStateChanged;
@@ -198,7 +209,8 @@ public sealed class AppController : ILogSink
         foreach (var scr in _config.EffectiveScreens())
         {
             string recFile = _paths.RecordFileForScreen(scr.Id);
-            if (File.Exists(recFile))
+            string broughtFile = _paths.BroughtFileForScreen(scr.Id);
+            if (File.Exists(recFile) || File.Exists(broughtFile))
             {
                 var recDesk = new PhoneDesk(_displays, _windows, _apps, _paths, screenId: scr.Id, screenName: scr.Name);
                 recDesk.Recover();
@@ -401,29 +413,94 @@ public sealed class AppController : ILogSink
     }
 
     private bool ShouldRefreshRunningApps(DateTimeOffset now, bool watching) =>
-        watching && (now - _lastCatalogRefresh).TotalSeconds >= 1.5 && _desks.Wishes.Any(w =>
-            w.IsTouch
-            && _desks.StateOf(w.Id) is { ScreenPhase: PhoneScreenPhase.Ready } dst
-            && (dst.ListVisible || dst.Placed is null)
-            && dst.Work is null);
+        watching && (now - _lastCatalogRefresh).TotalSeconds >= 1.5 && (
+            _desks.Wishes.Any(w =>
+                w.IsTouch
+                && _desks.StateOf(w.Id) is { ScreenPhase: PhoneScreenPhase.Ready } dst
+                && (dst.ListVisible || dst.Placed is null)
+                && dst.Work is null)
+            || _computerLibraries.Values.Any(lib => lib.IsLibraryOpen));
 
     public void RefreshRunningApps() => _ = RefreshRunningAppsAsync();
 
     private async Task RefreshRunningAppsAsync()
     {
-        var fresh = await Task.Run(() =>
+        var deskDisplays = new List<(uint Id, string Name, RectD Bounds)>();
+        foreach (var wish in _desks.Wishes)
+        {
+            if (_desks.StateOf(wish.Id) is { ScreenPhase: PhoneScreenPhase.Ready, DisplayId: { } did }
+                && _displays.BoundsOf(did) is { } b)
+            {
+                deskDisplays.Add((did, wish.Name, b));
+            }
+        }
+        bool needSpots = _computerLibraries.Values.Any(lib => lib.IsLibraryOpen)
+                         || _desks.Wishes.Any(w => !w.IsTouch && _desks.StateOf(w.Id)?.ScreenPhase == PhoneScreenPhase.Ready);
+
+        var (fresh, spots, labels) = await Task.Run(() =>
         {
             var list = _apps.GetRunningApps();
             Icons.Preload(list);
-            return list;
+            if (!needSpots)
+                return (list, new Dictionary<WindowKey, WindowSpot>(), new Dictionary<uint, string>());
+
+            var monitors = DisplayConfigService.GetActiveMonitors();
+            var displayList = new List<(uint Id, RectD Bounds)>();
+            var labelMap = new Dictionary<uint, string>();
+            uint syntheticId = 10000;
+            foreach (var dd in deskDisplays)
+            {
+                displayList.Add((dd.Id, dd.Bounds));
+                labelMap[dd.Id] = dd.Name;
+            }
+            foreach (var mon in monitors)
+            {
+                if (deskDisplays.Any(dd => mon.Bounds.Matches(dd.Bounds, tolerance: 2.0)))
+                    continue;
+                uint id = ++syntheticId;
+                displayList.Add((id, mon.Bounds));
+                labelMap[id] = mon.IsPrimary ? "主显示器" : (string.IsNullOrWhiteSpace(mon.FriendlyName) ? "其他屏幕" : mon.FriendlyName);
+            }
+
+            var visibleFrames = WindowService.GetOnScreenWindowZOrder()
+                .GroupBy(x => x.Handle)
+                .ToDictionary(g => g.Key, g => g.First().Frame);
+
+            var spotMap = new Dictionary<WindowKey, WindowSpot>();
+            foreach (var app in list)
+            {
+                foreach (var w in app.Windows)
+                {
+                    if (w.Minimized)
+                    {
+                        spotMap[w.Key] = WindowSpot.Hidden.Instance;
+                        continue;
+                    }
+                    if (visibleFrames.TryGetValue(w.Key.Handle, out var frame))
+                        spotMap[w.Key] = WindowSpot.Resolve(frame, shown: true, displayList);
+                    else
+                        spotMap[w.Key] = WindowSpot.Hidden.Instance;
+                }
+            }
+
+            return (list, spotMap, labelMap);
         });
         bool reorder = _reorderRunningApps;
         _reorderRunningApps = false;
         var next = reorder ? fresh : AppList.KeepingOrder(_runningApps, fresh);
         bool changed = !RunningAppsEqual(_runningApps, next);
         _runningApps = next;
+        if (needSpots)
+        {
+            _windowSpots = spots;
+            _displayLabels = labels;
+        }
         bool loadedChanged = !_catalogLoaded;
         _catalogLoaded = true;
+        foreach (var lib in _computerLibraries.Values)
+        {
+            if (lib.IsLibraryOpen) lib.SyncState();
+        }
         if (changed || loadedChanged)
             UiStateChanged?.Invoke();
     }
@@ -687,6 +764,99 @@ public sealed class AppController : ILogSink
         _lastSyncedOverlay = overlay;
         _lastSyncedScreenshotSetting = _config.Screenshot;
         SyncScreenshotWindows(overlay);
+        SyncComputerWindows();
+    }
+
+    private void SyncComputerWindows()
+    {
+        bool screensInUse = _session.InEpisode || ManualOverride;
+        var activeComputerIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (screensInUse)
+        {
+            foreach (var wish in _desks.Wishes)
+            {
+                if (wish.IsTouch) continue;
+                var st = _desks.StateOf(wish.Id);
+                if (st is not { ScreenPhase: PhoneScreenPhase.Ready, DisplayId: { } displayId }) continue;
+                var area = _displays.WindowAreaOf(displayId) ?? _displays.BoundsOf(displayId);
+                if (area is not { Width: > 0, Height: > 0 } workArea) continue;
+
+                activeComputerIds.Add(wish.Id);
+                double dpiScale = ComputeDisplayScale(displayId, workArea);
+                string screenId = wish.Id;
+
+                if (!_computerLibraries.TryGetValue(screenId, out var lib) || !lib.IsLoaded)
+                {
+                    lib = new ComputerLibraryWindow(this, screenId, () => SyncComputerTabVisual(screenId));
+                    _computerLibraries[screenId] = lib;
+                }
+
+                if (!_computerTabs.TryGetValue(screenId, out var tab) || !tab.IsLoaded)
+                {
+                    tab = new ComputerTabWindow(() => ToggleComputerLibrary(screenId));
+                    _computerTabs[screenId] = tab;
+                }
+
+                tab.ShowAtLeftEdge(workArea, dpiScale);
+                tab.UpdateVisual(lib.IsLibraryOpen, st.Work, st.Notice);
+
+                if (lib.IsLibraryOpen)
+                {
+                    lib.PositionNextToTab(workArea, tab.LastPhysicalBounds, dpiScale);
+                    lib.SyncState();
+                }
+            }
+        }
+
+        foreach (string staleId in _computerTabs.Keys.Where(k => !activeComputerIds.Contains(k)).ToList())
+        {
+            if (_computerLibraries.Remove(staleId, out var deadLib))
+            {
+                deadLib.DismissOverlay("screen-retired");
+                deadLib.Close();
+            }
+            if (_computerTabs.Remove(staleId, out var deadTab))
+                deadTab.Close();
+        }
+    }
+
+    private double ComputeDisplayScale(uint displayId, RectD physicalArea)
+    {
+        int? logicalW = _displays.WidthOf(displayId);
+        if (logicalW is > 0)
+            return Math.Clamp(physicalArea.Width / logicalW.Value, 1.0, 3.0);
+        return 1.0;
+    }
+
+    private void SyncComputerTabVisual(string screenId)
+    {
+        if (!_computerTabs.TryGetValue(screenId, out var tab)) return;
+        bool isOpen = _computerLibraries.TryGetValue(screenId, out var lib) && lib.IsLibraryOpen;
+        var st = GetScreenState(screenId);
+        tab.UpdateVisual(isOpen, st.Work, st.Notice);
+    }
+
+    private void ToggleComputerLibrary(string screenId)
+    {
+        if (!_computerLibraries.TryGetValue(screenId, out var lib) || !_computerTabs.TryGetValue(screenId, out var tab))
+            return;
+
+        if (lib.IsLibraryOpen)
+        {
+            lib.DismissOverlay("tab-toggle");
+            return;
+        }
+
+        var st = GetScreenState(screenId);
+        if (st.DisplayId is not { } displayId) return;
+        var area = _displays.WindowAreaOf(displayId) ?? _displays.BoundsOf(displayId);
+        if (area is not { Width: > 0, Height: > 0 } workArea) return;
+
+        double dpiScale = ComputeDisplayScale(displayId, workArea);
+        tab.ShowAtLeftEdge(workArea, dpiScale);
+        _ = RefreshRunningAppsAsync();
+        lib.ShowOverlay(workArea, tab.LastPhysicalBounds, dpiScale);
     }
 
     private void SyncScreenshotWindows(ScreenshotOverlay? overlay)
@@ -1250,6 +1420,18 @@ public sealed class AppController : ILogSink
     public void PullWindow(WindowInfo w, string? screenId = null) =>
         _desks.Pull(screenId ?? PrimaryTouchScreenId, w);
 
+    public void FocusComputerWindow(string screenId, WindowInfo w) =>
+        _desks.Focus(screenId, w);
+
+    public void PullComputerWindow(string screenId, WindowInfo w) =>
+        _desks.Pull(screenId, w);
+
+    public void PutBackComputerWindow(string screenId, WindowKey key) =>
+        _desks.PutBackBrought(screenId, key);
+
+    public void OpenComputerApp(string screenId, AppInfo app) =>
+        _desks.Open(screenId, app);
+
     public void OpenApp(AppInfo app, string? screenId = null)
     {
         string target = screenId ?? PrimaryTouchScreenId;
@@ -1427,5 +1609,11 @@ public sealed class AppController : ILogSink
         foreach (var hb in _screenHomeBars.Values)
             hb.Close();
         _screenHomeBars.Clear();
+        foreach (var cl in _computerLibraries.Values)
+            cl.Close();
+        _computerLibraries.Clear();
+        foreach (var ct in _computerTabs.Values)
+            ct.Close();
+        _computerTabs.Clear();
     }
 }

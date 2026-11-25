@@ -1,0 +1,63 @@
+<Window x:Class="SnugWin.App.Views.ComputerTabWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SnugComputerTab"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Topmost="True">
+    <Border x:Name="TabPill"
+            Background="{DynamicResource BubbleBg}"
+            BorderBrush="{DynamicResource BubbleBorder}"
+            BorderThickness="0,1,1,1"
+            CornerRadius="0,10,10,0"
+            Cursor="Hand"
+            MouseLeftButtonUp="OnTabClick"
+            ToolTip="App 资源库">
+        <Grid>
+            <!-- Idle chevron right -->
+            <Path x:Name="ChevronRight"
+                  Data="M 0,0 L 5,7 L 0,14"
+                  Stroke="{DynamicResource TextPrimary}"
+                  StrokeThickness="2"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round"
+                  StrokeLineJoin="Round"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"/>
+
+            <!-- Open chevron left -->
+            <Path x:Name="ChevronLeft"
+                  Data="M 5,0 L 0,7 L 5,14"
+                  Stroke="{DynamicResource AccentSoftText}"
+                  StrokeThickness="2"
+                  StrokeStartLineCap="Round"
+                  StrokeEndLineCap="Round"
+                  StrokeLineJoin="Round"
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  Visibility="Collapsed"/>
+
+            <!-- Working indicator -->
+            <TextBlock x:Name="WorkingGlyph"
+                       Text="⋯"
+                       FontSize="13"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource AccentSoftText}"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed"/>
+
+            <!-- Notice warning indicator -->
+            <TextBlock x:Name="NoticeGlyph"
+                       Text="▲"
+                       FontSize="10"
+                       Foreground="{DynamicResource PhoneAlertOrange}"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Visibility="Collapsed"/>
+        </Grid>
+    </Border>
+</Window>

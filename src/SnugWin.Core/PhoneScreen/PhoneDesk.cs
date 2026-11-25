@@ -68,6 +68,7 @@ public sealed record PhoneDeskState
     public DeskNotice? Notice { get; init; }
     public IReadOnlySet<int> Quitting { get; init; } = new HashSet<int>();
     public IReadOnlySet<WindowKey> Closing { get; init; } = new HashSet<WindowKey>();
+    public IReadOnlySet<WindowKey> Brought { get; init; } = new HashSet<WindowKey>();
     public bool Dismissed { get; init; }
     public bool StaysOnDismiss { get; init; }
     public CloseButton? CloseButton { get; init; }
@@ -97,6 +98,8 @@ public sealed class PhoneDesk
     private readonly IAppControl _apps;
     private readonly ITimeline _timeline;
     private readonly RestoreRecordStore<PhoneRecord> _ledger;
+    private readonly JsonFileStore<List<PhoneRecord>> _broughtFile;
+    private readonly Dictionary<WindowKey, PhoneRecord> _brought = new();
     private readonly JsonFileStore<ZoomBook> _zoomFile;
     private readonly ZoomBook _zoomBook;
     private readonly JsonFileStore<LeftBehindBook> _leftBehindFile;
@@ -187,6 +190,7 @@ public sealed class PhoneDesk
         _state = new PhoneDeskState { StaysOnDismiss = staysOnDismiss };
         _lane = sharedLane ?? new SerialLane();
         _ledger = new RestoreRecordStore<PhoneRecord>(paths.RecordFileForScreen(_screenId));
+        _broughtFile = new JsonFileStore<List<PhoneRecord>>(paths.BroughtFileForScreen(_screenId));
         _zoomFile = sharedZoomFile ?? new JsonFileStore<ZoomBook>(paths.ZoomBookFile);
         _zoomBook = sharedZoomBook ?? _zoomFile.LoadOrQuarantine() ?? new ZoomBook();
         _leftBehindFile = sharedLeftBehindFile ?? new JsonFileStore<LeftBehindBook>(paths.LeftBehindFile);
@@ -265,7 +269,6 @@ public sealed class PhoneDesk
 
     public void Pull(WindowInfo window, Func<WindowKey, PhoneRecord?>? transferFromOtherScreen)
     {
-        if (_behavior != ScreenBehavior.TouchScreen) return;
         if (State.Quitting.Contains(window.Key.Pid))
         {
             Log.Info($"{window.AppName} 正在退出，不放 {window.Label}");
@@ -276,7 +279,42 @@ public sealed class PhoneDesk
         {
             try
             {
-                await PlaceAsync(window, zoom: true, transferFromOtherScreen);
+                if (_behavior == ScreenBehavior.Computer)
+                    await PullToComputerAsync(window, transferFromOtherScreen);
+                else
+                    await PlaceAsync(window, zoom: true, transferFromOtherScreen);
+            }
+            finally
+            {
+                State = State with { Work = null };
+            }
+        });
+    }
+
+    internal async Task<bool> FocusAsync(WindowInfo window)
+    {
+        if (ReadyDisplay($"切换到 {window.Label}") is not { } id || _displays.BoundsOf(id) is not { } bounds)
+        {
+            State = State with { Notice = new DeskNotice.ScreenNotReady() };
+            return true;
+        }
+        if (await ReachAsync(window) is not { } look) return true;
+        if (look.Minimized || !bounds.Contains(look.Frame.Center))
+            return false;
+        await _windows.FocusAsync(window.Key);
+        Log.Info($"切换到 {window.Label}{(look.FullScreen ? "（全屏）" : "")}");
+        return true;
+    }
+
+    public void PutBackBrought(WindowKey key)
+    {
+        if (!_brought.ContainsKey(key)) return;
+        Begin(new DeskWork(DeskWorkKind.PuttingBack));
+        _ = _lane.Run(async () =>
+        {
+            try
+            {
+                await PutBackBroughtAsync(key);
             }
             finally
             {
@@ -292,6 +330,14 @@ public sealed class PhoneDesk
         SetPlacement(null);
         State = State with { ListVisible = true };
         return transferred;
+    }
+
+    internal PhoneRecord? DetachBroughtForTransfer(WindowKey key)
+    {
+        if (!_brought.Remove(key, out var record)) return null;
+        SaveBrought();
+        SyncBroughtState();
+        return record;
     }
 
     public void UpdateWish(
@@ -318,6 +364,16 @@ public sealed class PhoneDesk
                 await ReturnToOriginalAsync(p);
                 await MatchWidthAsync();
             }
+        });
+    }
+
+    internal Task ReturnBroughtIfPidAsync(int pid)
+    {
+        return _lane.Run(async () =>
+        {
+            var matching = _brought.Keys.Where(k => k.Pid == pid).ToList();
+            foreach (var key in matching)
+                await PutBackBroughtAsync(key);
         });
     }
 
@@ -536,12 +592,14 @@ public sealed class PhoneDesk
 
     public void VerifyPlacement()
     {
-        if (_placement is null || State.Work is not null || _verifying) return;
+        if ((_placement is null && _brought.Count == 0) || State.Work is not null || _verifying) return;
         _verifying = true;
         _ = _lane.Run(async () =>
         {
             try
             {
+                if (_brought.Count > 0)
+                    await PruneMissingBroughtAsync();
                 if (_placement is not { } p) return;
                 if (!await _windows.ExistsAsync(p.Window.Key))
                 {
@@ -851,6 +909,7 @@ public sealed class PhoneDesk
         if (resetRebuildBudget) _offlineRebuildUsed = false;
         if (_placement is { } p) await PutBackAsync(p.Record);
         SetPlacement(null);
+        await ReturnAllBroughtAsync();
         if (_behavior == ScreenBehavior.Computer)
             await EvacuateStrayWindowsAsync();
         await RetireDisplayAsync();
@@ -863,7 +922,8 @@ public sealed class PhoneDesk
             ListVisible = true,
             Notice = null,
             Quitting = new HashSet<int>(),
-            Closing = new HashSet<WindowKey>()
+            Closing = new HashSet<WindowKey>(),
+            Brought = new HashSet<WindowKey>(_brought.Keys)
         };
     }
 
@@ -871,6 +931,7 @@ public sealed class PhoneDesk
     {
         if (_placement is { } p)
             _ = await ReturnToOriginalAsync(p);
+        await ReturnAllBroughtAsync();
         await EvacuateStrayWindowsAsync();
         await MatchWidthAsync();
         State = State with
@@ -886,6 +947,7 @@ public sealed class PhoneDesk
             return;
         if (_placement is { } p)
             _ = await ReturnToOriginalAsync(p);
+        await ReturnAllBroughtAsync();
         await EvacuateStrayWindowsAsync();
         await MatchWidthAsync();
         State = State with { ListVisible = true };
@@ -1349,9 +1411,12 @@ public sealed class PhoneDesk
             var appeared = pidWindows.Concat(appWindows).FirstOrDefault(w => !before.Contains(w.Key));
             if (appeared is not null)
             {
-                Log.Info($"{app.Name}（{_timeline.Now - started:0.1}s）出现 {appeared.Label}，放上手机屏");
+                Log.Info($"{app.Name}（{_timeline.Now - started:0.1}s）出现 {appeared.Label}，放上{_screenName}");
                 State = State with { Work = new DeskWork(DeskWorkKind.Placing, appeared.Label) };
-                await PlaceAsync(appeared);
+                if (_behavior == ScreenBehavior.Computer)
+                    await PullToComputerAsync(appeared);
+                else
+                    await PlaceAsync(appeared);
                 return;
             }
             bool running = await _apps.IsRunningAsync(pid);
@@ -1360,9 +1425,12 @@ public sealed class PhoneDesk
                 && ((!running && _timeline.Now >= exitGraceDeadline) || (knownPid is not null && _timeline.Now >= started + 2.0)))
             {
                 var existing = appWindows[0];
-                Log.Info($"{app.Name}（{_timeline.Now - started:0.1}s）沿用已有窗口 {existing.Label}，放上手机屏");
+                Log.Info($"{app.Name}（{_timeline.Now - started:0.1}s）沿用已有窗口 {existing.Label}，放上{_screenName}");
                 State = State with { Work = new DeskWork(DeskWorkKind.Placing, existing.Label) };
-                await PlaceAsync(existing);
+                if (_behavior == ScreenBehavior.Computer)
+                    await PullToComputerAsync(existing);
+                else
+                    await PlaceAsync(existing);
                 return;
             }
             if (!running && _timeline.Now >= exitGraceDeadline && appWindows.Count == 0)
@@ -1567,10 +1635,167 @@ public sealed class PhoneDesk
         return null;
     }
 
-    private Task<PhoneRecord?> PutBackLeftoverAsync() =>
-        _placement is null && _ledger.Pending() is { } record
-            ? RecoverRecordAsync(record)
-            : Task.FromResult<PhoneRecord?>(null);
+    private async Task PullToComputerAsync(WindowInfo window, Func<WindowKey, PhoneRecord?>? transferFromOtherScreen = null)
+    {
+        double started = _timeline.Now;
+        if (ReadyDisplay($"把 {window.Label} 挪到电脑屏") is not { } id || _displays.WindowAreaOf(id) is not { } area)
+        {
+            State = State with { Notice = new DeskNotice.ScreenNotReady() };
+            return;
+        }
+        if (await ReachAsync(window) is not { } look) return;
+
+        PhoneRecord? existingRecord = _brought.TryGetValue(window.Key, out var prevBrought) ? prevBrought : null;
+        PhoneRecord? transferredRecord = existingRecord is null ? transferFromOtherScreen?.Invoke(window.Key) : null;
+        PhoneRecord record = existingRecord
+            ?? (transferredRecord is not null
+                ? transferredRecord with { Window = window.Key }
+                : new PhoneRecord
+                {
+                    Window = window.Key,
+                    App = window.AppName,
+                    Label = window.Label,
+                    Original = OriginalFrame(look.Frame, id),
+                    WasFullScreen = look.FullScreen,
+                    WasMinimized = look.Minimized,
+                    Zoom = 0,
+                    AppId = window.AppId,
+                    Title = window.Title
+                });
+
+        _brought[window.Key] = record;
+        if (!SaveBrought())
+        {
+            if (existingRecord is null) _brought.Remove(window.Key);
+            State = State with { Notice = new DeskNotice.RecordUnwritable() };
+            return;
+        }
+        SyncBroughtState();
+
+        if (look.Minimized) await _windows.SetMinimizedAsync(window.Key, false);
+        if (look.FullScreen)
+        {
+            await _windows.SetFullScreenAsync(window.Key, false);
+            if (existingRecord is null && transferredRecord is null && (await _windows.LookAsync(window.Key))?.Frame is { } windowed)
+            {
+                record.Original = OriginalFrame(windowed, id);
+                SaveBrought();
+            }
+        }
+
+        var currentFrame = (await _windows.LookAsync(window.Key))?.Frame ?? look.Frame;
+        double targetW = Math.Clamp(currentFrame.Width > 10 ? currentFrame.Width : area.Width * 0.8, 320, area.Width);
+        double targetH = Math.Clamp(currentFrame.Height > 10 ? currentFrame.Height : area.Height * 0.8, 240, area.Height);
+        var targetRect = new RectD(
+            Math.Round(area.X + Math.Max(0, (area.Width - targetW) / 2.0)),
+            Math.Round(area.Y + Math.Max(0, (area.Height - targetH) / 2.0)),
+            Math.Round(targetW),
+            Math.Round(targetH));
+
+        var bounds = _displays.BoundsOf(id) ?? area;
+        var got = await _windows.MoveAsync(window.Key, targetRect);
+        if (got is not null && !bounds.Contains(got.Value.Center) && _displays.MainArea() is { } mainArea)
+        {
+            var relay = new RectD(
+                mainArea.X + Math.Max(0, (mainArea.Width - Math.Min(mainArea.Width, targetW)) / 2),
+                mainArea.Y + Math.Max(0, (mainArea.Height - Math.Min(mainArea.Height, targetH)) / 2),
+                Math.Min(mainArea.Width, targetW),
+                Math.Min(mainArea.Height, targetH));
+            _ = await _windows.MoveAsync(window.Key, relay);
+            got = await _windows.MoveAsync(window.Key, targetRect);
+        }
+
+        if (got is null || !bounds.Contains(got.Value.Center))
+        {
+            var notice = await UnreachableAsync(window);
+            Log.Warn($"{window.Label} 挪不到电脑屏「{_screenName}」，放回原位");
+            await PutBackBroughtAsync(window.Key);
+            State = State with { Notice = notice };
+            return;
+        }
+
+        await _windows.FocusAsync(window.Key);
+        Log.Info($"{window.Label} 已移至电脑屏「{_screenName}」（{_timeline.Now - started:0.0}s）：原位 {record.Original.Short}，当前 {got.Value.Short}");
+    }
+
+    private async Task PutBackBroughtAsync(WindowKey key)
+    {
+        if (!_brought.TryGetValue(key, out var record)) return;
+        if ((await _windows.LookAsync(key))?.FullScreen == true)
+            await _windows.SetFullScreenAsync(key, false);
+
+        if (await PutBackAsync(record) is { } left)
+        {
+            _brought[key] = left;
+            State = State with { Notice = new DeskNotice.WindowUnresponsive(left.App) };
+        }
+        else
+        {
+            _brought.Remove(key);
+        }
+        SaveBrought();
+        SyncBroughtState();
+    }
+
+    private async Task ReturnAllBroughtAsync()
+    {
+        if (_brought.Count == 0) return;
+        foreach (var key in _brought.Keys.ToList())
+            await PutBackBroughtAsync(key);
+    }
+
+    private async Task PruneMissingBroughtAsync()
+    {
+        bool changed = false;
+        foreach (var key in _brought.Keys.ToList())
+        {
+            if (!await _windows.ExistsAsync(key))
+            {
+                _brought.Remove(key);
+                changed = true;
+            }
+        }
+        if (changed)
+        {
+            SaveBrought();
+            SyncBroughtState();
+        }
+    }
+
+    private bool SaveBrought()
+    {
+        try
+        {
+            if (_brought.Count == 0)
+                _broughtFile.Delete();
+            else
+                _broughtFile.Save(_brought.Values.ToList());
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"电脑屏还原记录保存失败：{ex.Message}");
+            return false;
+        }
+    }
+
+    private void SyncBroughtState()
+    {
+        State = State with { Brought = new HashSet<WindowKey>(_brought.Keys) };
+    }
+
+    private async Task<PhoneRecord?> PutBackLeftoverAsync()
+    {
+        if (_brought.Count == 0 && _broughtFile.LoadOrQuarantine() is { Count: > 0 } savedBrought)
+        {
+            foreach (var rec in savedBrought)
+                _brought[rec.Window] = rec;
+            await ReturnAllBroughtAsync();
+        }
+        return _placement is null && _ledger.Pending() is { } record
+            ? await RecoverRecordAsync(record)
+            : null;
+    }
 
     private async Task<PhoneRecord?> RecoverRecordAsync(PhoneRecord record)
     {

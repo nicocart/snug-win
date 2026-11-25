@@ -208,12 +208,32 @@ public sealed class DeskSet
     public void ShowList(string? screenId = null) => DeskForScreen(screenId)?.ShowList();
     public void ReturnToPlaced(string? screenId = null) => DeskForScreen(screenId)?.ReturnToPlaced();
     public void PutBack(string? screenId = null) => DeskForScreen(screenId)?.PutBack();
+    public void PutBackBrought(string screenId, WindowKey key) => DeskForScreen(screenId)?.PutBackBrought(key);
     public void Zoom(string screenId, int delta) => DeskForScreen(screenId)?.Zoom(delta);
     public void Open(string screenId, AppInfo app) => DeskForScreen(screenId)?.Open(app);
     public void NewWindow(string screenId, RunningApp app) => DeskForScreen(screenId)?.NewWindow(app);
     public void Close(string screenId, WindowInfo window) => DeskForScreen(screenId)?.Close(window);
     public void DismissScreen(string screenId) => DeskForScreen(screenId)?.DismissScreen();
     public void DismissNotice(string screenId) => DeskForScreen(screenId)?.DismissNotice();
+
+    public void Focus(string screenId, WindowInfo window)
+    {
+        if (!_desks.TryGetValue(screenId, out var desk)) return;
+        if (desk.State.Quitting.Contains(window.Key.Pid) || desk.State.Closing.Contains(window.Key))
+        {
+            Log.Info($"{window.AppName} 正在退出或关窗口，不切换到 {window.Label}");
+            return;
+        }
+        desk.DismissNotice();
+        _ = _lane.Run(async () =>
+        {
+            if (!await desk.FocusAsync(window))
+            {
+                Log.Info($"切换到 {window.Label}：已不在屏（{screenId}）上，改成放过来");
+                Pull(screenId, window);
+            }
+        });
+    }
 
     public void ReenterAllDismissedTouch()
     {
@@ -240,8 +260,11 @@ public sealed class DeskSet
         {
             foreach (var other in _desks.Values)
             {
-                if (!ReferenceEquals(other, target) && other.PlacedWindowKey == key)
+                if (ReferenceEquals(other, target)) continue;
+                if (other.PlacedWindowKey == key)
                     return other.DetachPlacementForTransfer();
+                if (other.DetachBroughtForTransfer(key) is { } broughtRecord)
+                    return broughtRecord;
             }
             return null;
         });
@@ -253,6 +276,7 @@ public sealed class DeskSet
         {
             if (desk.PlacedWindowKey is { } k && k.Pid == app.Pid && !string.Equals(desk.ScreenId, screenId, StringComparison.OrdinalIgnoreCase))
                 await desk.ReturnWindowIfPlacedAsync(app.Pid).ConfigureAwait(false);
+            await desk.ReturnBroughtIfPidAsync(app.Pid).ConfigureAwait(false);
         }
         DeskForScreen(screenId)?.Quit(app);
     }

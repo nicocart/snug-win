@@ -22,4 +22,7 @@ public sealed record SnugPaths(string DataDirectory)
         string.IsNullOrWhiteSpace(screenId) || string.Equals(screenId, Config.ScreenConfig.LegacyPhoneId, StringComparison.OrdinalIgnoreCase)
             ? PhoneRecordFile
             : Path.Combine(DataDirectory, $"screen-{screenId}.json");
+
+    public string BroughtFileForScreen(string screenId) =>
+        Path.Combine(DataDirectory, $"computer-brought-{screenId}.json");
 }
