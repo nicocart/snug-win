@@ -30,7 +30,7 @@
 >
 > **立场**：SnugWin 为独立社区项目，与 UU远程 无商业关联。是否开通 VIP，请依自身对 UU远程 的需求决定，不必为 SnugWin 专门开通。对接部分为可替换的适配层，欢迎提 PR 接入其他远控或 fork 自行适配，详见[开发](#-开发)。
 
-> 1:1 承接并跟随上游 macOS 原版 [**zephyr4123/snug**](https://github.com/zephyr4123/snug)（MIT License，`v2.8.0`）的产品体验、多屏多远控适配与交互状态机，专为 **Windows 10 / 11 + 网易 UU远程 / CrossDesk** 打造。
+> 1:1 承接并跟随上游 macOS 原版 [**zephyr4123/snug**](https://github.com/zephyr4123/snug)（MIT License，`v2.9.0`）的产品体验、多屏多远控适配与交互状态机，专为 **Windows 10 / 11 + 网易 UU远程 / CrossDesk** 打造。
 
 ---
 

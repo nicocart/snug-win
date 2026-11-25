@@ -126,7 +126,7 @@
                                                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="14,0,8,0"/>
                                                 <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Visibility="{Binding TagsVis}">
                                                     <Border Visibility="{Binding OnPhoneTagVis}" Background="{DynamicResource PhoneTagOnBg}" CornerRadius="10" Padding="8,2" Margin="0,0,6,0">
-                                                        <TextBlock Text="在手机屏上" FontSize="13" Foreground="{DynamicResource PhoneTintBlue}"/>
+                                                        <TextBlock Text="在这块屏上" FontSize="13" Foreground="{DynamicResource PhoneTintBlue}"/>
                                                     </Border>
                                                     <Border Visibility="{Binding MinimizedVis}" Background="{DynamicResource PhoneTagMutedBg}" CornerRadius="10" Padding="8,2">
                                                         <TextBlock Text="已最小化" FontSize="13" Foreground="{DynamicResource PhoneSecondaryText}"/>

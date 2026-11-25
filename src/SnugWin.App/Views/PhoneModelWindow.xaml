@@ -245,7 +245,7 @@
             </ListBox>
 
             <TextBlock Grid.Row="3" Margin="2,10,2,0" FontSize="11" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap"
-                       Text="提示：更换比例在线生效；若已在 UU远程 中连接，切换一次屏幕再切回即可同步精确点按。"/>
+                       Text="提示：更换比例在线生效；UU远程 切换一次屏幕再切回，CrossDesk 点击设置页「一键重启远控」即可同步精确点按。"/>
         </Grid>
     </Grid>
 </Window>

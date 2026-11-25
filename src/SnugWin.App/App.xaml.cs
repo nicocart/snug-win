@@ -23,6 +23,9 @@ public partial class App : System.Windows.Application
     private System.Drawing.Icon? _idleTrayIcon;
     private System.Drawing.Icon? _connectedTrayIcon;
     private System.Windows.Forms.ToolStripMenuItem? _statusMenuItem;
+    private System.Windows.Forms.ToolStripMenuItem? _restartRemoteMenuItem;
+    private System.Windows.Forms.ToolStripMenuItem? _endSessionNowMenuItem;
+    private System.Windows.Forms.ToolStripMenuItem? _clearMainScreenMenuItem;
     private System.Windows.Forms.ToolStripMenuItem? _reentryMenuItem;
     private System.Windows.Forms.ToolStripMenuItem? _manualPhoneMenuItem;
     private System.Windows.Forms.ToolStripMenuItem? _updateMenuItem;
@@ -60,6 +63,15 @@ public partial class App : System.Windows.Application
                 }
                 if (_manualPhoneMenuItem is not null) _manualPhoneMenuItem.Checked = _controller.ManualOverride;
                 if (_reentryMenuItem is not null) _reentryMenuItem.Visible = _controller.CanReenterPhoneScreen;
+                if (_restartRemoteMenuItem is not null)
+                {
+                    bool unseen = !_controller.IsInReconnectGrace && _controller.ScreensUnseenBy is not null;
+                    _restartRemoteMenuItem.Visible = unseen;
+                    if (unseen)
+                        _restartRemoteMenuItem.Text = $"一键重启 {_controller.ScreensUnseenBy}（识别新屏）";
+                }
+                if (_endSessionNowMenuItem is not null) _endSessionNowMenuItem.Visible = _controller.IsInReconnectGrace;
+                if (_clearMainScreenMenuItem is not null) _clearMainScreenMenuItem.Visible = !string.IsNullOrWhiteSpace(_controller.MainScreenId);
             });
         };
 
@@ -133,6 +145,41 @@ public partial class App : System.Windows.Application
         };
         _reentryMenuItem.Click += (_, _) => Dispatcher.Invoke(() => _controller?.ReenterScreen());
         menu.Items.Add(_reentryMenuItem);
+
+        _restartRemoteMenuItem = new System.Windows.Forms.ToolStripMenuItem("一键重启远控（识别新屏）")
+        {
+            Visible = false
+        };
+        _restartRemoteMenuItem.Click += async (_, _) =>
+        {
+            if (_controller is null) return;
+            _restartRemoteMenuItem.Enabled = false;
+            try
+            {
+                var (ok, msg) = await _controller.RestartUnseenRemoteAsync();
+                if (!ok)
+                    System.Windows.MessageBox.Show(msg, "一键重启远控", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+            finally
+            {
+                _restartRemoteMenuItem.Enabled = true;
+            }
+        };
+        menu.Items.Add(_restartRemoteMenuItem);
+
+        _endSessionNowMenuItem = new System.Windows.Forms.ToolStripMenuItem("立即结束远程")
+        {
+            Visible = false
+        };
+        _endSessionNowMenuItem.Click += (_, _) => Dispatcher.Invoke(() => _controller?.EndSessionNow());
+        menu.Items.Add(_endSessionNowMenuItem);
+
+        _clearMainScreenMenuItem = new System.Windows.Forms.ToolStripMenuItem("取消常驻虚拟屏")
+        {
+            Visible = false
+        };
+        _clearMainScreenMenuItem.Click += (_, _) => Dispatcher.Invoke(() => _controller?.SetMainScreen(null));
+        menu.Items.Add(_clearMainScreenMenuItem);
 
         _manualPhoneMenuItem = new System.Windows.Forms.ToolStripMenuItem("手动开启手机屏（测试/兜底）")
         {

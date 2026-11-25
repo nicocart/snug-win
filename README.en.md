@@ -28,7 +28,7 @@ Display and touch enhancements for remote Windows PCs<br>A dedicated virtual scr
 >
 > **For UU Remote VIP members**: from December 1, 2026, UU Remote moves multi-display and virtual display features to VIP. SnugWin works with UU Remote VIP as well as free CrossDesk; it is an independent community project with no commercial ties to UU Remote.
 
-> Faithfully follows the product design, multi-screen & multi-remote adapter architecture, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.8.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote / CrossDesk**.
+> Faithfully follows the product design, multi-screen & multi-remote adapter architecture, and interaction model of upstream macOS [**zephyr4123/snug**](https://github.com/zephyr4123/snug) (`v2.9.0`, MIT License), engineered natively for **Windows 10 / 11 + NetEase UU Remote / CrossDesk**.
 
 ---
 

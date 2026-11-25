@@ -552,7 +552,7 @@
                     <Border Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}" BorderThickness="1" CornerRadius="14" Padding="16,14">
                         <StackPanel>
                             <TextBlock Text="致谢与开源许可" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,6"/>
-                            <TextBlock x:Name="AboutCreditText" Text="MIT License（nicocart/snug-win），承接上游 zephyr4123/snug（v2.8.0）多屏多机型、多远控适配、提前准备虚拟屏与交互状态机。"
+                            <TextBlock x:Name="AboutCreditText" Text="MIT License（nicocart/snug-win），承接上游 zephyr4123/snug（v2.9.0）多屏多机型、多远控适配、电脑屏 App 资源库、提前准备虚拟屏与交互状态机。"
                                        FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,4"/>
                             <TextBlock Text="虚拟屏驱动基于 MolotovCherry/virtual-display-rs（0.3.1），内置 SHA-256 与签名指纹校验。"
                                        FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,12"/>
@@ -637,6 +637,9 @@
                                                     Padding="10,4" FontSize="11.5" Margin="0,0,6,0"
                                                     Visibility="{Binding PreviewVisibility}"
                                                     Click="OnPreviewScreenClick" Tag="{Binding Id}"/>
+                                            <Button Content="改名" Style="{StaticResource SecondaryButton}"
+                                                    Padding="10,4" FontSize="11.5" Margin="0,0,6,0"
+                                                    Click="OnRenameScreenClick" Tag="{Binding Id}"/>
                                             <Button Content="换机型..." Style="{StaticResource SecondaryButton}"
                                                     Padding="10,4" FontSize="11.5"
                                                     Click="OnSwapScreenModelClick" Tag="{Binding Id}"/>

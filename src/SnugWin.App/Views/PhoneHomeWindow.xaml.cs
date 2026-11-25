@@ -438,7 +438,11 @@ public partial class PhoneHomeWindow : Window
             DeskNotice.NoNewWindow n => ($"{n.App} 无法新建窗口", "可点 App 打开已有窗口"),
             DeskNotice.NoWindow n => ($"未找到 {n.App} 的窗口", "App 已打开，但没有可显示的窗口"),
             DeskNotice.QuitStalled q => ($"{q.App} 未退出", "强制退出将丢失未存储的内容"),
-            DeskNotice.Reshaped => ("屏幕比例已调整", "在远控中切到其他屏幕再切回，点按位置才准确"),
+            DeskNotice.Reshaped => (
+                "屏幕比例已调整",
+                _controller.IsLaunchOnlyOwner
+                    ? "在设置页或托盘点击「一键重启远控」重新识别后，点按位置才准确"
+                    : "在远控中切到其他屏幕再切回，点按位置才准确"),
             DeskNotice.ReshapeFailed => ("屏幕比例未能调整", "下次连接时生效"),
             DeskNotice.KeptOnDismiss => ("窗口已还原", "屏幕保留，可在远控中切换屏幕"),
             DeskNotice.CircuitBreakerTripped => ("已触发建屏熔断保护", "防止屏幕闪烁，请确认驱动正常后在界面重新开启"),

@@ -449,6 +449,83 @@ public partial class SettingsWindow : Window
             new PhoneModelWindow(_controller, id) { Owner = this }.ShowDialog();
     }
 
+    private void OnRenameScreenClick(object sender, RoutedEventArgs e)
+    {
+        if (sender is not System.Windows.Controls.Button { Tag: string id }) return;
+        var current = _controller.GetScreenConfig(id);
+        if (current is null) return;
+
+        var dialog = new Window
+        {
+            Title = "重命名虚拟屏",
+            Owner = this,
+            Width = 340,
+            Height = 158,
+            ResizeMode = ResizeMode.NoResize,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            ShowInTaskbar = false
+        };
+        dialog.SetResourceReference(BackgroundProperty, "BgCanvas");
+        WindowPlacementHelper.ApplyWindowChromeTheme(dialog, _controller.IsEffectiveDarkTheme);
+
+        var root = new System.Windows.Controls.Grid { Margin = new Thickness(16) };
+        root.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new System.Windows.Controls.RowDefinition { Height = GridLength.Auto });
+
+        var label = new System.Windows.Controls.TextBlock
+        {
+            Text = "新的屏幕名称（会显示在远控的显示器列表中）：",
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        label.SetResourceReference(System.Windows.Controls.TextBlock.ForegroundProperty, "TextSecondary");
+        System.Windows.Controls.Grid.SetRow(label, 0);
+
+        var input = new System.Windows.Controls.TextBox
+        {
+            Text = current.Name,
+            FontSize = 13,
+            Padding = new Thickness(8, 5, 8, 5),
+            Margin = new Thickness(0, 0, 0, 12)
+        };
+        input.SetResourceReference(System.Windows.Controls.Control.BackgroundProperty, "BgCardElevated");
+        input.SetResourceReference(System.Windows.Controls.Control.ForegroundProperty, "TextPrimary");
+        input.SetResourceReference(System.Windows.Controls.Control.BorderBrushProperty, "BorderControl");
+        System.Windows.Controls.Grid.SetRow(input, 1);
+
+        var btnRow = new System.Windows.Controls.StackPanel
+        {
+            Orientation = System.Windows.Controls.Orientation.Horizontal,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Right
+        };
+        var cancelBtn = new System.Windows.Controls.Button { Content = "取消", Width = 68, Margin = new Thickness(0, 0, 8, 0), IsCancel = true };
+        cancelBtn.SetResourceReference(StyleProperty, "SecondaryButton");
+        var okBtn = new System.Windows.Controls.Button { Content = "保存", Width = 68, IsDefault = true };
+        okBtn.SetResourceReference(StyleProperty, "PrimaryButton");
+        okBtn.Click += (_, _) =>
+        {
+            if (!string.IsNullOrWhiteSpace(input.Text))
+                dialog.DialogResult = true;
+        };
+        btnRow.Children.Add(cancelBtn);
+        btnRow.Children.Add(okBtn);
+        System.Windows.Controls.Grid.SetRow(btnRow, 2);
+
+        root.Children.Add(label);
+        root.Children.Add(input);
+        root.Children.Add(btnRow);
+        dialog.Content = root;
+        dialog.Loaded += (_, _) =>
+        {
+            input.Focus();
+            input.SelectAll();
+        };
+
+        if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(input.Text))
+            _controller.RenameScreen(id, input.Text.Trim());
+    }
+
     private void OnEndSessionNowClick(object sender, RoutedEventArgs e) => _controller.EndSessionNow();
 
     private async void OnRestartUnseenRemoteClick(object sender, RoutedEventArgs e)
