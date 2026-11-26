@@ -166,10 +166,11 @@ public static class CrossDeskHost
         }
     }
 
-    public static async Task<(bool Ok, string Message)> RestartHostAsync(CancellationToken ct = default)
+    public static async Task<(bool Ok, string Message)> RestartHostAsync(CancellationToken ct = default, bool silent = false)
     {
         string? exePath = ResolveExecutablePath();
         bool serviceInstalled = IsServiceInstalled();
+        bool hadVisibleGui = HasVisibleCrossDeskGui();
 
         if (serviceInstalled && IsServiceRunning())
         {
@@ -221,6 +222,7 @@ public static class CrossDeskHost
 
         await Task.Delay(300, ct).ConfigureAwait(false);
 
+        bool serviceSpawnedHost = false;
         if (serviceInstalled)
         {
             var (startCode, startErr) = await RunScAsync($"start \"{ServiceName}\"", ct).ConfigureAwait(false);
@@ -228,30 +230,73 @@ public static class CrossDeskHost
             {
                 return (false, $"启动 CrossDeskService 失败（退出码 {startCode}）：{startErr}".Trim());
             }
-            await Task.Delay(400, ct).ConfigureAwait(false);
+
+            // CrossDeskService automatically spawns the persistent background CrossDesk.exe host in Session 1.
+            // Wait briefly so silent restarts stay 100% invisible without popping up the CrossDesk GUI window.
+            var spawnDeadline = DateTimeOffset.UtcNow.AddSeconds(3.5);
+            while (DateTimeOffset.UtcNow < spawnDeadline)
+            {
+                if (FindRunningPid() is not null)
+                {
+                    serviceSpawnedHost = true;
+                    break;
+                }
+                await Task.Delay(250, ct).ConfigureAwait(false);
+            }
         }
 
-        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+        bool needLaunchGui = !serviceSpawnedHost || (!silent && hadVisibleGui);
+        if (needLaunchGui)
         {
+            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = exePath,
+                        UseShellExecute = true,
+                        WindowStyle = silent ? ProcessWindowStyle.Minimized : ProcessWindowStyle.Normal
+                    });
+                }
+                catch (Exception ex)
+                {
+                    return (false, $"启动 CrossDesk.exe 失败：{ex.Message}");
+                }
+            }
+            else if (!serviceInstalled)
+            {
+                return (false, "未找到 CrossDesk.exe 安装路径，请手动启动 CrossDesk。");
+            }
+        }
+
+        return (true, silent
+            ? "已在空闲时静默重启 CrossDesk，正在重新识别虚拟屏。"
+            : "已重启 CrossDesk，正在等待重新识别屏幕。");
+    }
+
+    private static bool HasVisibleCrossDeskGui()
+    {
+        try
+        {
+            var procs = Process.GetProcessesByName("CrossDesk");
             try
             {
-                Process.Start(new ProcessStartInfo
+                return Array.Exists(procs, p =>
                 {
-                    FileName = exePath,
-                    UseShellExecute = true
+                    try { return p.MainWindowHandle != IntPtr.Zero; }
+                    catch { return false; }
                 });
             }
-            catch (Exception ex)
+            finally
             {
-                return (false, $"启动 CrossDesk.exe 失败：{ex.Message}");
+                foreach (var p in procs) p.Dispose();
             }
         }
-        else if (!serviceInstalled)
+        catch
         {
-            return (false, "未找到 CrossDesk.exe 安装路径，请手动启动 CrossDesk。");
+            return false;
         }
-
-        return (true, "已重启 CrossDesk，正在等待重新识别屏幕。");
     }
 
     private static async Task<(int ExitCode, string Error)> RunScAsync(string arguments, CancellationToken ct)

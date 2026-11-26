@@ -58,3 +58,84 @@ public static class CrossDeskRemote
             UnreachableDisplays: unreachable);
     }
 }
+
+/// <summary>
+/// Guardrails for silent idle auto-restart when CrossDesk cannot see newly created virtual screens:
+/// waits for screen stabilization (debounce), never restarts during an active remote episode,
+/// enforces a cooldown, and caps consecutive retries until unseen state clears or screen set changes.
+/// </summary>
+public sealed class IdleAutoRestartPolicy
+{
+    public static readonly TimeSpan DefaultDebounce = TimeSpan.FromSeconds(2.5);
+    public static readonly TimeSpan DefaultCooldown = TimeSpan.FromSeconds(45);
+    public const int DefaultMaxAttempts = 2;
+
+    private readonly TimeSpan _debounce;
+    private readonly TimeSpan _cooldown;
+    private readonly int _maxAttempts;
+
+    private DateTimeOffset? _unseenSince;
+    private DateTimeOffset _lastAttemptAt = DateTimeOffset.MinValue;
+    private string _lastScreenSignature = string.Empty;
+    private int _attempts;
+
+    public IdleAutoRestartPolicy(
+        TimeSpan? debounce = null,
+        TimeSpan? cooldown = null,
+        int maxAttempts = DefaultMaxAttempts)
+    {
+        _debounce = debounce ?? DefaultDebounce;
+        _cooldown = cooldown ?? DefaultCooldown;
+        _maxAttempts = Math.Max(1, maxAttempts);
+    }
+
+    public int Attempts => _attempts;
+
+    public bool ShouldRestart(
+        DateTimeOffset now,
+        bool enabled,
+        bool elevated,
+        bool unseenCrossDesk,
+        bool anyRemoteActive,
+        bool anyScreenReady,
+        bool restartInFlight,
+        string screenSignature)
+    {
+        if (!string.Equals(screenSignature, _lastScreenSignature, StringComparison.Ordinal))
+        {
+            _lastScreenSignature = screenSignature;
+            _attempts = 0;
+            _unseenSince = null;
+        }
+
+        if (!unseenCrossDesk)
+        {
+            _unseenSince = null;
+            _attempts = 0;
+            return false;
+        }
+
+        if (!enabled || !elevated || anyRemoteActive || !anyScreenReady || restartInFlight)
+        {
+            _unseenSince = null;
+            return false;
+        }
+
+        _unseenSince ??= now;
+        if (now - _unseenSince.Value < _debounce)
+            return false;
+        if (_attempts >= _maxAttempts)
+            return false;
+        if (_lastAttemptAt != DateTimeOffset.MinValue && now - _lastAttemptAt < _cooldown)
+            return false;
+
+        return true;
+    }
+
+    public void RecordAttempt(DateTimeOffset now)
+    {
+        _attempts++;
+        _lastAttemptAt = now;
+        _unseenSince = null;
+    }
+}

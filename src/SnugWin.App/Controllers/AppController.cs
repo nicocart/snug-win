@@ -53,6 +53,9 @@ public sealed class AppController : ILogSink
     private bool _loggedWithheld;
     private RemoteIdentity? _lastHookOwner;
     private bool _lastHookManual;
+    private readonly IdleAutoRestartPolicy _autoRestartPolicy = new();
+    private int _autoRestartInFlight;
+    private string? _lastAutoMatchedController;
     private bool _catalogLoaded;
     private bool _reorderRunningApps = true;
     private bool _wasAnyListShowing;
@@ -274,7 +277,10 @@ public sealed class AppController : ILogSink
             bool interrupted = transitions.Any(t => t is SessionTransition.Interrupted);
             bool ended = transitions.Any(t => t is SessionTransition.Ended);
             if (ended)
+            {
                 _touchHook.RemoteEnded();
+                _lastAutoMatchedController = null;
+            }
             if (interrupted || ended)
                 BringCursorHome(includePersistentMain: true);
 
@@ -292,6 +298,8 @@ public sealed class AppController : ILogSink
                 return;
             }
 
+            MaybeAutoMatchControllerModel(now);
+
             bool seesNewScreens = !(_session.Owner?.SeesScreensOnlyAtLaunch == true && !ManualOverride);
             var rawWishes = ScreenPlan.Wishes(_config, remote, preview: false, seesNewScreens);
             bool wantsTouch = ManualOverride
@@ -301,6 +309,7 @@ public sealed class AppController : ILogSink
 
             UpdateWithheldStatus(remote, seesNewScreens);
             KeepPointerOffPreparedScreens(activeMonitors);
+            MaybeAutoRestartUnseenRemote(now);
 
             if ((now - _lastVerifyAt).TotalSeconds >= 2.0)
             {
@@ -1305,6 +1314,107 @@ public sealed class AppController : ILogSink
         Log.Info($"提前准备虚拟屏 → {(on ? "开" : "关")}");
         OnTick();
         UiStateChanged?.Invoke();
+    }
+
+    public void SetAutoRestartUnseenRemote(bool on)
+    {
+        _config = _config with { AutoRestartUnseenRemote = on };
+        _configStore.Save(_config);
+        Log.Info($"空闲时自动静默重启远控 → {(on ? "开" : "关")}");
+        UiStateChanged?.Invoke();
+    }
+
+    public void SetAutoMatchControllerModel(bool on)
+    {
+        _config = _config with { AutoMatchControllerModel = on };
+        _configStore.Save(_config);
+        Log.Info($"UU 控制端自动匹配机型 → {(on ? "开" : "关")}");
+        UiStateChanged?.Invoke();
+    }
+
+    private void MaybeAutoRestartUnseenRemote(DateTimeOffset now)
+    {
+        bool unseenCrossDesk = string.Equals(_screensUnseenBy, CrossDeskRemote.Identity.DisplayName, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(_screensUnseenBy, CrossDeskRemote.Identity.LogName, StringComparison.OrdinalIgnoreCase);
+
+        string sig = string.Join(";", _desks.Wishes.Select(w =>
+            $"{w.Id}:{_desks.StateOf(w.Id)?.DisplayId}:{w.Fit.BaseWidth}:{w.Orientation}"));
+
+        bool shouldRestart = _autoRestartPolicy.ShouldRestart(
+            now,
+            enabled: _config.AutoRestartUnseenRemote,
+            elevated: IsElevated,
+            unseenCrossDesk: unseenCrossDesk,
+            anyRemoteActive: _session.IsConnected || _session.InEpisode || ManualOverride,
+            anyScreenReady: _desks.IsAnyReady,
+            restartInFlight: Volatile.Read(ref _autoRestartInFlight) != 0,
+            screenSignature: sig);
+
+        if (!shouldRestart) return;
+        if (Interlocked.Exchange(ref _autoRestartInFlight, 1) != 0) return;
+        _autoRestartPolicy.RecordAttempt(now);
+
+        Log.Info("空闲且 CrossDesk 未识别到最新虚拟屏，正在后台静默重启 CrossDesk（无感刷新显示器列表）...");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                var result = await CrossDeskHost.RestartHostAsync(silent: true).ConfigureAwait(false);
+                if (result.Ok)
+                    Log.Info(result.Message);
+                else
+                    Log.Warn($"后台静默重启 CrossDesk 失败：{result.Message}");
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"后台静默重启 CrossDesk 异常：{ex.Message}");
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _autoRestartInFlight, 0);
+                _ = _dispatcher.BeginInvoke(() =>
+                {
+                    OnTick();
+                    NotifySummary();
+                    UiStateChanged?.Invoke();
+                });
+            }
+        });
+    }
+
+    private void MaybeAutoMatchControllerModel(DateTimeOffset now)
+    {
+        if (!_config.AutoMatchControllerModel || !_session.IsConnected || ManualOverride)
+            return;
+        if (_session.Owner is null || !string.Equals(_session.Owner.LogName, _remotes.UU.Identity.LogName, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var controllers = _session.EpisodeControllers(now);
+        if (controllers.Count == 0 || !ControllerClassifier.WantsPhoneScreen(controllers))
+            return;
+
+        foreach (string name in controllers)
+        {
+            if (string.Equals(name, _lastAutoMatchedController, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var matched = Catalog.MatchControllerName(name);
+            if (matched is null) continue;
+
+            _lastAutoMatchedController = name;
+            var screens = _config.EffectiveScreens();
+            var target = screens.FirstOrDefault(s => s.Enabled && !s.FixedNativePixels && s.Device.Kind == matched.Kind)
+                         ?? (matched.Kind == DeviceKind.Phone
+                             ? screens.FirstOrDefault(s => s.Enabled && !s.FixedNativePixels && s.Device.Kind.IsTouch())
+                             : null);
+            if (target is null) return;
+            if (string.Equals(target.Device.Model, matched.Id, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            Log.Info($"根据 UU 控制端「{name}」自动匹配机型 → {matched.Id}（应用到「{target.Name}」）");
+            SelectScreenDevice(target.Id, PhoneChoice.FromModel(matched));
+            return;
+        }
     }
 
     public void RefreshRemoteInstalls()

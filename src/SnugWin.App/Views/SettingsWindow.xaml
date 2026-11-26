@@ -655,17 +655,43 @@
                     </ItemsControl>
                 </ScrollViewer>
 
-                <!-- Keep Screens Ready Card (for launch-only display remotes like CrossDesk) -->
+                <!-- Keep Screens Ready & Auto-Adaptation Card -->
                 <Border x:Name="KeepScreensReadyCard" Grid.Row="2" Background="{DynamicResource BgCard}" BorderBrush="{DynamicResource BorderSubtle}"
-                        BorderThickness="1" CornerRadius="14" Padding="14,11" Margin="0,0,0,10" Visibility="Collapsed">
-                    <CheckBox x:Name="KeepScreensReadyCheck" Style="{StaticResource ToggleSwitchCheckBox}"
-                              Click="OnKeepScreensReadyClick">
-                        <StackPanel>
-                            <TextBlock Text="提前准备虚拟屏" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
-                            <TextBlock x:Name="KeepScreensReadyDetailText" Text="SnugWin 启动时即建立屏幕" FontSize="11.5"
-                                       Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"/>
-                        </StackPanel>
-                    </CheckBox>
+                        BorderThickness="1" CornerRadius="14" Padding="14,11" Margin="0,0,0,10">
+                    <StackPanel>
+                        <CheckBox x:Name="KeepScreensReadyCheck" Style="{StaticResource ToggleSwitchCheckBox}"
+                                  Click="OnKeepScreensReadyClick">
+                            <StackPanel>
+                                <TextBlock Text="提前准备虚拟屏" FontSize="13.5" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+                                <TextBlock x:Name="KeepScreensReadyDetailText" Text="SnugWin 启动时即建立屏幕" FontSize="11.5"
+                                           Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                            </StackPanel>
+                        </CheckBox>
+
+                        <Border x:Name="AutoRestartRemoteRow" BorderBrush="{DynamicResource BorderDivider}" BorderThickness="0,1,0,0"
+                                Margin="0,9,0,0" Padding="0,9,0,0">
+                            <CheckBox x:Name="AutoRestartRemoteCheck" Style="{StaticResource ToggleSwitchCheckBox}"
+                                      Checked="OnAutoRestartRemoteChanged" Unchecked="OnAutoRestartRemoteChanged">
+                                <StackPanel>
+                                    <TextBlock Text="空闲时自动静默重启 CrossDesk" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+                                    <TextBlock Text="建屏或改比例后若无人远程，后台无感重启以识别新屏（不打断当前远程）" FontSize="11"
+                                               Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                </StackPanel>
+                            </CheckBox>
+                        </Border>
+
+                        <Border BorderBrush="{DynamicResource BorderDivider}" BorderThickness="0,1,0,0"
+                                Margin="0,9,0,0" Padding="0,9,0,0">
+                            <CheckBox x:Name="AutoMatchModelCheck" Style="{StaticResource ToggleSwitchCheckBox}"
+                                      Checked="OnAutoMatchModelChanged" Unchecked="OnAutoMatchModelChanged">
+                                <StackPanel>
+                                    <TextBlock Text="UU 连入自动匹配设备机型" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+                                    <TextBlock Text="根据 UU远程 控制端设备名自动匹配手机 / 平板比例（不覆盖固定像素设置）" FontSize="11"
+                                               Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                </StackPanel>
+                            </CheckBox>
+                        </Border>
+                    </StackPanel>
                 </Border>
 
                 <!-- Add Screen Bento Card -->

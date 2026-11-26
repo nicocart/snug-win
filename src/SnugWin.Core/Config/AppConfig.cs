@@ -35,6 +35,8 @@ public sealed record AppConfig
     public string? MainScreen { get; init; }
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool KeepScreensReady { get; init; } = false;
+    public bool AutoRestartUnseenRemote { get; init; } = true;
+    public bool AutoMatchControllerModel { get; init; } = true;
     public bool Welcomed { get; init; } = false;
     public string? LastVersion { get; init; }
 

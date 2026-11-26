@@ -365,11 +365,14 @@ public partial class SettingsWindow : Window
         ScreensList.ItemsSource = rows;
         var launchOnly = _controller.LaunchOnlyRemotes;
         bool showReadyToggle = launchOnly.Count > 0 || _controller.KeepScreensReady;
-        KeepScreensReadyCard.Visibility = showReadyToggle ? Visibility.Visible : Visibility.Collapsed;
+        KeepScreensReadyCheck.Visibility = showReadyToggle ? Visibility.Visible : Visibility.Collapsed;
+        AutoRestartRemoteRow.Visibility = showReadyToggle ? Visibility.Visible : Visibility.Collapsed;
         KeepScreensReadyCheck.IsChecked = _controller.KeepScreensReady;
+        AutoRestartRemoteCheck.IsChecked = _controller.Config.AutoRestartUnseenRemote;
+        AutoMatchModelCheck.IsChecked = _controller.Config.AutoMatchControllerModel;
         KeepScreensReadyDetailText.Text = launchOnly.Count == 0
             ? "SnugWin 启动时即建立屏幕"
-            : $"SnugWin 启动时即建立屏幕；开启后需重启 {string.Join("、", launchOnly)}";
+            : $"SnugWin 启动时即建立屏幕；配合空闲静默重启无需手动刷新 {string.Join("、", launchOnly)}";
 
         AddScreenLimitHint.Text = $"{screens.Count} / {ScreenConfig.Limit}";
         bool canAdd = screens.Count < ScreenConfig.Limit;
@@ -405,6 +408,16 @@ public partial class SettingsWindow : Window
         {
             _controller.SetKeepScreensReady(false);
         }
+    }
+
+    private void OnAutoRestartRemoteChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_suppressEvents) _controller.SetAutoRestartUnseenRemote(AutoRestartRemoteCheck.IsChecked == true);
+    }
+
+    private void OnAutoMatchModelChanged(object sender, RoutedEventArgs e)
+    {
+        if (!_suppressEvents) _controller.SetAutoMatchControllerModel(AutoMatchModelCheck.IsChecked == true);
     }
 
     private DeviceKind SelectedAddKind()
