@@ -48,11 +48,19 @@ public sealed class WindowService : IWindowControl
         Win32.GetWindowThreadProcessId(hwnd, out int pid);
         if (pid != window.Pid) return Task.FromResult<WindowLook?>(null);
 
-        if (!TryGetVisibleBounds(hwnd, out var bounds))
-            return Task.FromResult<WindowLook?>(null);
-
         bool minimized = Win32.IsIconic(hwnd);
-        bool fullScreen = IsLikelyFullScreen(hwnd, bounds);
+        RectD bounds;
+        if (minimized)
+        {
+            if (!TryGetNormalBounds(hwnd, out bounds) && !TryGetVisibleBounds(hwnd, out bounds))
+                return Task.FromResult<WindowLook?>(null);
+        }
+        else if (!TryGetVisibleBounds(hwnd, out bounds))
+        {
+            return Task.FromResult<WindowLook?>(null);
+        }
+
+        bool fullScreen = !minimized && IsLikelyFullScreen(hwnd, bounds);
         return Task.FromResult<WindowLook?>(new WindowLook(bounds, fullScreen, minimized));
     }
 
@@ -262,7 +270,7 @@ public sealed class WindowService : IWindowControl
 
         Win32.EnumWindows((hwnd, _) =>
         {
-            if (!Win32.IsWindowVisible(hwnd) || IsCloaked(hwnd)) return true;
+            if (!Win32.IsWindowVisible(hwnd)) return true;
             Win32.GetWindowThreadProcessId(hwnd, out int pid);
             if (pid == selfPid) return true;
             if (pidFilter is { } filter && pid != filter) return true;
@@ -270,7 +278,18 @@ public sealed class WindowService : IWindowControl
             bool minimized = Win32.IsIconic(hwnd);
             if (!includeMinimized && minimized) return true;
 
-            if (!IsStandardAppWindow(hwnd)) return true;
+            int cloaked = GetCloakedFlags(hwnd);
+            if (cloaked != 0)
+            {
+                // Minimized UWP/Store windows (ApplicationFrameWindow) are shell-cloaked by Windows.
+                bool allowMinimizedUwp = minimized
+                    && includeMinimized
+                    && cloaked == Win32.DWM_CLOAKED_SHELL
+                    && Win32.GetWindowClass(hwnd) == "ApplicationFrameWindow";
+                if (!allowMinimizedUwp) return true;
+            }
+
+            if (!IsStandardAppWindow(hwnd, minimized)) return true;
 
             string title = WindowInfo.VisibleTitle(Win32.GetWindowTitle(hwnd));
             if (string.IsNullOrEmpty(title)) return true;
@@ -351,15 +370,25 @@ public sealed class WindowService : IWindowControl
             || className.StartsWith("crossdesk_privacy", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsStandardAppWindow(IntPtr hwnd)
+    private static bool IsStandardAppWindow(IntPtr hwnd, bool minimized = false)
     {
         long exStyle = Win32.GetWindowLongPtrW(hwnd, Win32.GWL_EXSTYLE);
         if ((exStyle & Win32.WS_EX_TOOLWINDOW) != 0) return false;
         IntPtr owner = Win32.GetWindow(hwnd, Win32.GW_OWNER);
         if (owner != IntPtr.Zero && (exStyle & Win32.WS_EX_APPWINDOW) == 0) return false;
 
-        if (!Win32.GetWindowRect(hwnd, out var rc)) return false;
-        if (rc.Width <= 40 || rc.Height <= 40) return false;
+        if (minimized)
+        {
+            // Minimized windows report an off-screen iconic bar (e.g. 160x28 at -32000,-32000) via GetWindowRect;
+            // validate against rcNormalPosition so minimized apps remain visible in Running Apps.
+            if (TryGetNormalBounds(hwnd, out var normalRc) && (normalRc.Width <= 40 || normalRc.Height <= 40))
+                return false;
+        }
+        else
+        {
+            if (!Win32.GetWindowRect(hwnd, out var rc)) return false;
+            if (rc.Width <= 40 || rc.Height <= 40) return false;
+        }
 
         string cls = Win32.GetWindowClass(hwnd);
         if (IsExcludedOverlayClass(cls)) return false;
@@ -380,10 +409,30 @@ public sealed class WindowService : IWindowControl
         return Win32.IsWindowVisible(hwnd) && !Win32.IsIconic(hwnd) && !IsCloaked(hwnd);
     }
 
-    private static bool IsCloaked(IntPtr hwnd)
+    private static int GetCloakedFlags(IntPtr hwnd)
     {
         int cloaked = 0;
-        return Win32.DwmGetWindowAttribute(hwnd, Win32.DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0 && cloaked != 0;
+        return Win32.DwmGetWindowAttribute(hwnd, Win32.DWMWA_CLOAKED, out cloaked, sizeof(int)) == 0 ? cloaked : 0;
+    }
+
+    private static bool IsCloaked(IntPtr hwnd) => GetCloakedFlags(hwnd) != 0;
+
+    internal static bool TryGetNormalBounds(IntPtr hwnd, out RectD bounds)
+    {
+        var wp = new Win32.WINDOWPLACEMENT { length = Marshal.SizeOf<Win32.WINDOWPLACEMENT>() };
+        if (Win32.GetWindowPlacement(hwnd, ref wp)
+            && wp.rcNormalPosition.Width > 0
+            && wp.rcNormalPosition.Height > 0)
+        {
+            bounds = new RectD(
+                wp.rcNormalPosition.Left,
+                wp.rcNormalPosition.Top,
+                wp.rcNormalPosition.Width,
+                wp.rcNormalPosition.Height);
+            return true;
+        }
+        bounds = default;
+        return false;
     }
 
     public static bool TryGetVisibleBounds(IntPtr hwnd, out RectD bounds)
