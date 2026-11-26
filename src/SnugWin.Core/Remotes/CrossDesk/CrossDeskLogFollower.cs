@@ -105,6 +105,16 @@ public sealed class CrossDeskLogFollower
         return result;
     }
 
+    public void SkipToEnd(ulong? fileId, long size)
+    {
+        if (size < 0) size = 0;
+        _started = true;
+        _fileId = fileId;
+        _offset = size;
+        _skippingPartial = false;
+        _pending = Array.Empty<byte>();
+    }
+
     public void Reset()
     {
         _started = false;

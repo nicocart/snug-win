@@ -92,4 +92,47 @@ public sealed class AutoAdaptationAndRestartTests
         Assert.True(cfg.AutoRestartUnseenRemote);
         Assert.True(cfg.AutoMatchControllerModel);
     }
+
+    [Fact]
+    public void CrossDeskMultiLogTail_ReplaysOnlyNewestLogAndTailsLaterAppendsFromBoth()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "snugwin-multilog-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string oldUserLog = Path.Combine(dir, "user-crossdesk.log");
+            string liveSystemLog = Path.Combine(dir, "system-crossdesk.log");
+
+            File.WriteAllText(oldUserLog, "[2026-11-26 11:24:22] Privacy: reason=Enabling privacy on connection\n");
+            File.SetLastWriteTimeUtc(oldUserLog, DateTime.UtcNow.AddMinutes(-10));
+
+            File.WriteAllText(liveSystemLog,
+                "[2026-11-26 11:38:20] DXGI: session display slot=0 name='DISPLAY1' available=true bounds=(0,0;2560,1600), selected=true\n" +
+                "[2026-11-26 11:38:20] DXGI: session display slot=1 name='DISPLAY19' available=true bounds=(2560,0;3640,1860), selected=false\n");
+            File.SetLastWriteTimeUtc(liveSystemLog, DateTime.UtcNow);
+
+            var multi = new SnugWin.Windows.Sensing.CrossDeskMultiLogTail([oldUserLog, liveSystemLog]);
+            var first = multi.Poll();
+            // Must NOT replay the stale 10-minute-old connection line from user log
+            Assert.DoesNotContain(first, l => l.Contains("Enabling privacy on connection", StringComparison.Ordinal));
+            Assert.Equal(2, first.Count);
+            Assert.Contains(first, l => l.Contains("DISPLAY19", StringComparison.Ordinal));
+
+            // Appending to live SYSTEM log is observed
+            File.AppendAllText(liveSystemLog, "[2026-11-26 11:39:59] Local display [2:DISPLAY19]\n");
+            var second = multi.Poll();
+            Assert.Single(second);
+            Assert.Contains("Local display [2:DISPLAY19]", second[0]);
+
+            // Later GUI append to user log is ALSO observed
+            File.AppendAllText(oldUserLog, "[2026-11-26 11:41:00] Last remote controller disconnected; reason=connection_closed\n");
+            var third = multi.Poll();
+            Assert.Single(third);
+            Assert.Contains("Last remote controller disconnected", third[0]);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
 }

@@ -168,6 +168,7 @@ public sealed class AppController : ILogSink
         WindowService.SetExcludedProcesses(_remotes.AllProcessNames);
         _touchHook.SetNormalizers(_remotes.NormalizerFactories);
         _touchHook.SetActiveSource(0);
+        _touchHook.SetCrossDeskSourceIndex(_remotes.SourceIndexFor(CrossDeskRemote.Identity, manualOverride: false));
         RefreshRemoteInstalls();
 
         _desks = new DeskSet(
@@ -281,6 +282,8 @@ public sealed class AppController : ILogSink
                 _touchHook.RemoteEnded();
                 _lastAutoMatchedController = null;
             }
+            if (interrupted)
+                _desks.ReturnWindowsOnInterrupt();
             if (interrupted || ended)
                 BringCursorHome(includePersistentMain: true);
 
@@ -315,6 +318,8 @@ public sealed class AppController : ILogSink
             {
                 _lastVerifyAt = now;
                 _desks.VerifyPlacement();
+                if (!remote && now.ToUniversalTime() - _touchHook.LastInjectedActivityAt > TimeSpan.FromSeconds(20))
+                    _desks.ReclaimIdlePreparedScreens();
                 _desks.CheckReturns();
                 _desks.SettleDisplays();
             }

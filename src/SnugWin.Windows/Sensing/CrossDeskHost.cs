@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Win32;
 using Microsoft.Win32.SafeHandles;
 using SnugWin.Core.Remotes.CrossDesk;
+using SnugWin.Windows.Native;
 
 namespace SnugWin.Windows.Sensing;
 
@@ -25,6 +27,23 @@ public static class CrossDeskHost
         "logs");
 
     public static string DefaultLogPath => Path.Combine(DefaultLogDirectory, "crossdesk.log");
+
+    /// <summary>
+    /// All Windows log locations CrossDesk may write to:
+    /// - Current interactive user's %LOCALAPPDATA% (when GUI is launched by the user)
+    /// - LocalSystem 64-bit / 32-bit systemprofile LocalAppData (when CrossDeskService spawns persistent host as SYSTEM)
+    /// </summary>
+    public static IReadOnlyList<string> CandidateLogPaths()
+    {
+        var list = new List<string> { DefaultLogPath };
+        string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+        if (!string.IsNullOrWhiteSpace(winDir))
+        {
+            list.Add(Path.Combine(winDir, "System32", "config", "systemprofile", "AppData", "Local", "CrossDesk", "logs", "crossdesk.log"));
+            list.Add(Path.Combine(winDir, "SysWOW64", "config", "systemprofile", "AppData", "Local", "CrossDesk", "logs", "crossdesk.log"));
+        }
+        return list.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
 
     public static bool IsServiceInstalled()
     {
@@ -222,7 +241,6 @@ public static class CrossDeskHost
 
         await Task.Delay(300, ct).ConfigureAwait(false);
 
-        bool serviceSpawnedHost = false;
         if (serviceInstalled)
         {
             var (startCode, startErr) = await RunScAsync($"start \"{ServiceName}\"", ct).ConfigureAwait(false);
@@ -230,49 +248,85 @@ public static class CrossDeskHost
             {
                 return (false, $"启动 CrossDeskService 失败（退出码 {startCode}）：{startErr}".Trim());
             }
-
-            // CrossDeskService automatically spawns the persistent background CrossDesk.exe host in Session 1.
-            // Wait briefly so silent restarts stay 100% invisible without popping up the CrossDesk GUI window.
-            var spawnDeadline = DateTimeOffset.UtcNow.AddSeconds(3.5);
-            while (DateTimeOffset.UtcNow < spawnDeadline)
-            {
-                if (FindRunningPid() is not null)
-                {
-                    serviceSpawnedHost = true;
-                    break;
-                }
-                await Task.Delay(250, ct).ConfigureAwait(false);
-            }
+            // Wait briefly for the service persistent host to come up so the user-session GUI attaches cleanly.
+            await Task.Delay(700, ct).ConfigureAwait(false);
         }
 
-        bool needLaunchGui = !serviceSpawnedHost || (!silent && hadVisibleGui);
-        if (needLaunchGui)
+        // Always launch user-session CrossDesk.exe so it attaches to the persistent host,
+        // keeps Windows privacy screen working, and writes live events to %LOCALAPPDATA%\CrossDesk\logs\crossdesk.log.
+        // In silent mode (when GUI was not open before), minimize the newly created GUI window as soon as it appears.
+        if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
         {
-            if (!string.IsNullOrEmpty(exePath) && File.Exists(exePath))
+            try
             {
-                try
+                var launched = Process.Start(new ProcessStartInfo
                 {
-                    Process.Start(new ProcessStartInfo
+                    FileName = exePath,
+                    UseShellExecute = true,
+                    WindowStyle = silent && !hadVisibleGui ? ProcessWindowStyle.Minimized : ProcessWindowStyle.Normal
+                });
+
+                if (silent && !hadVisibleGui)
+                {
+                    int? launchedPid = launched?.Id;
+                    _ = Task.Run(async () =>
                     {
-                        FileName = exePath,
-                        UseShellExecute = true,
-                        WindowStyle = silent ? ProcessWindowStyle.Minimized : ProcessWindowStyle.Normal
+                        var deadline = DateTimeOffset.UtcNow.AddSeconds(4.5);
+                        while (DateTimeOffset.UtcNow < deadline)
+                        {
+                            if (TryMinimizeCrossDeskGui(launchedPid))
+                                return;
+                            await Task.Delay(150).ConfigureAwait(false);
+                        }
                     });
                 }
-                catch (Exception ex)
-                {
-                    return (false, $"启动 CrossDesk.exe 失败：{ex.Message}");
-                }
             }
-            else if (!serviceInstalled)
+            catch (Exception ex)
             {
-                return (false, "未找到 CrossDesk.exe 安装路径，请手动启动 CrossDesk。");
+                return (false, $"启动 CrossDesk.exe 失败：{ex.Message}");
             }
+        }
+        else if (!serviceInstalled)
+        {
+            return (false, "未找到 CrossDesk.exe 安装路径，请手动启动 CrossDesk。");
         }
 
         return (true, silent
             ? "已在空闲时静默重启 CrossDesk，正在重新识别虚拟屏。"
             : "已重启 CrossDesk，正在等待重新识别屏幕。");
+    }
+
+    private static bool TryMinimizeCrossDeskGui(int? preferredPid)
+    {
+        bool minimizedAny = false;
+        try
+        {
+            var procs = Process.GetProcessesByName("CrossDesk");
+            try
+            {
+                foreach (var p in procs)
+                {
+                    if (preferredPid is { } pid && p.Id != pid) continue;
+                    try
+                    {
+                        p.Refresh();
+                        IntPtr hwnd = p.MainWindowHandle;
+                        if (hwnd != IntPtr.Zero && Win32.IsWindowVisible(hwnd))
+                        {
+                            Win32.ShowWindow(hwnd, Win32.SW_MINIMIZE);
+                            minimizedAny = true;
+                        }
+                    }
+                    catch { }
+                }
+            }
+            finally
+            {
+                foreach (var p in procs) p.Dispose();
+            }
+        }
+        catch { }
+        return minimizedAny;
     }
 
     private static bool HasVisibleCrossDeskGui()
@@ -476,5 +530,116 @@ public sealed class CrossDeskLogTail
             : _follower.Feed(buffer.AsSpan(0, totalRead));
     }
 
+    public void SeekToEnd()
+    {
+        if (!File.Exists(_logPath)) return;
+        try
+        {
+            using var stream = new FileStream(
+                _logPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            ulong? fileId = CrossDeskHost.TryGetFileId(stream.SafeFileHandle);
+            _follower.SkipToEnd(fileId, stream.Length);
+        }
+        catch
+        {
+            // ignore inaccessible candidate
+        }
+    }
+
     public void Reset() => _follower.Reset();
+}
+
+/// <summary>
+/// Tails all candidate CrossDesk log paths (user profile + LocalSystem systemprofile).
+/// On initial sync or reset, replays only the most recently modified existing log from offset 0
+/// while fast-forwarding older stale logs to EOF so historical sessions never pollute live state,
+/// yet subsequent appends to ANY candidate log are observed immediately.
+/// </summary>
+public sealed class CrossDeskMultiLogTail
+{
+    private readonly (string Path, CrossDeskLogTail Tail)[] _entries;
+    private bool _initialized;
+
+    public CrossDeskMultiLogTail(IEnumerable<string> paths)
+    {
+        _entries = paths
+            .Where(p => !string.IsNullOrWhiteSpace(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(p => (p, new CrossDeskLogTail(p)))
+            .ToArray();
+    }
+
+    public IReadOnlyList<string> Poll()
+    {
+        if (_entries.Length == 0)
+            return Array.Empty<string>();
+
+        if (!_initialized)
+        {
+            _initialized = true;
+            int newestIndex = -1;
+            DateTime newestWriteUtc = DateTime.MinValue;
+            for (int i = 0; i < _entries.Length; i++)
+            {
+                try
+                {
+                    if (!File.Exists(_entries[i].Path)) continue;
+                    var wt = File.GetLastWriteTimeUtc(_entries[i].Path);
+                    if (newestIndex < 0 || wt > newestWriteUtc)
+                    {
+                        newestIndex = i;
+                        newestWriteUtc = wt;
+                    }
+                }
+                catch
+                {
+                    // ignore inaccessible path
+                }
+            }
+
+            for (int i = 0; i < _entries.Length; i++)
+            {
+                if (i != newestIndex)
+                    _entries[i].Tail.SeekToEnd();
+            }
+        }
+
+        List<string>? combined = null;
+        Exception? lastError = null;
+        bool anyReadable = false;
+
+        foreach (var (path, tail) in _entries)
+        {
+            try
+            {
+                if (!File.Exists(path)) continue;
+                var lines = tail.Poll();
+                anyReadable = true;
+                if (lines.Count > 0)
+                {
+                    combined ??= new List<string>(lines.Count);
+                    combined.AddRange(lines);
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+            }
+        }
+
+        if (!anyReadable && lastError is not null)
+            throw lastError;
+
+        return combined ?? (IReadOnlyList<string>)Array.Empty<string>();
+    }
+
+    public void Reset()
+    {
+        _initialized = false;
+        foreach (var (_, tail) in _entries)
+            tail.Reset();
+    }
 }

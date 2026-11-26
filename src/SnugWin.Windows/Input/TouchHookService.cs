@@ -17,6 +17,7 @@ public sealed class TouchHookService : IDisposable
 {
     private const double WheelScaleFactor = 2.5; // 120 / 48 DIPs -> ~1:1 touch scroll tracking
     private const int MaxClickDiagCount = 5;
+    private const nuint CrossDeskExtraInfo = 0x4353444D; // 'CSDM'
 
     private readonly object _gate = new();
     private readonly long _startTick = Stopwatch.GetTimestamp();
@@ -26,6 +27,7 @@ public sealed class TouchHookService : IDisposable
     private IReadOnlyList<Func<ITouchNormalizer>> _normalizerFactories = [static () => new DirectTouch()];
     private TouchPipeline _pipeline = new();
     private int _activeSource;
+    private int _crossDeskSourceIndex = -1;
     private bool _injectedLeftDown;
     private PointD _injectedLeftDownPoint;
     private long _injectedLeftDownTickMs;
@@ -37,6 +39,7 @@ public sealed class TouchHookService : IDisposable
     private int _clickDiagCount;
     private int _activeDiagClickNo;
     private int _replayDiagCount;
+    private long _lastInjectedActivityUtcTicks;
     private nint _bubbleHwnd;
     private readonly Dictionary<int, string> _pidExeCache = new();
 
@@ -68,6 +71,15 @@ public sealed class TouchHookService : IDisposable
 
     public bool IsRunning => _hookHandle != IntPtr.Zero;
 
+    public DateTimeOffset LastInjectedActivityAt
+    {
+        get
+        {
+            long ticks = Volatile.Read(ref _lastInjectedActivityUtcTicks);
+            return ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : DateTimeOffset.MinValue;
+        }
+    }
+
     public void SetSelectionBubbleHandle(IntPtr hwnd) => Volatile.Write(ref _bubbleHwnd, hwnd);
 
     public void SetNormalizers(IReadOnlyList<Func<ITouchNormalizer>> factories)
@@ -97,6 +109,14 @@ public sealed class TouchHookService : IDisposable
         lock (_gate)
         {
             _activeSource = sourceIndex >= 0 && sourceIndex < _normalizerFactories.Count ? sourceIndex : 0;
+        }
+    }
+
+    public void SetCrossDeskSourceIndex(int sourceIndex)
+    {
+        lock (_gate)
+        {
+            _crossDeskSourceIndex = sourceIndex > 0 && sourceIndex < _normalizerFactories.Count ? sourceIndex : -1;
         }
     }
 
@@ -312,6 +332,9 @@ public sealed class TouchHookService : IDisposable
             if (_requireInjectedFlag && !injected)
                 return Win32.CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
+            if (injected && inRegion)
+                Volatile.Write(ref _lastInjectedActivityUtcTicks, DateTimeOffset.UtcNow.Ticks);
+
             _echoes.ObserveIncomingExtraInfo(info.dwExtraInfo);
 
             if (msg == Win32.WM_LBUTTONDOWN)
@@ -387,8 +410,11 @@ public sealed class TouchHookService : IDisposable
 
             double now = Stopwatch.GetElapsedTime(_startTick).TotalSeconds;
             var raw = new PointerEvent(evKind, currentPoint, now);
-            diagSource = _activeSource;
-            step = _pipeline.Take(raw, _activeSource, _regions, _options);
+            int effectiveSource = _activeSource;
+            if (effectiveSource == 0 && info.dwExtraInfo == CrossDeskExtraInfo && _crossDeskSourceIndex > 0)
+                effectiveSource = _crossDeskSourceIndex;
+            diagSource = effectiveSource;
+            step = _pipeline.Take(raw, effectiveSource, _regions, _options);
 
             pressOrigin = _heldPressPoint;
             foreach (var action in step.Actions)

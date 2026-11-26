@@ -19,7 +19,7 @@ namespace SnugWin.Windows.Sensing;
 public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
 {
     private readonly UUProcessWatch _processWatch;
-    private readonly CrossDeskLogTail _tail;
+    private readonly CrossDeskMultiLogTail _tail;
     private readonly CrossDeskSlots _slots = new();
     private readonly Func<bool> _isInstalled;
     private readonly Func<IReadOnlyList<string>> _onlineDeviceNames;
@@ -33,7 +33,7 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
 
     public CrossDeskRemoteAdapter()
         : this(
-            logPath: null,
+            logPaths: CrossDeskHost.CandidateLogPaths(),
             findPid: CrossDeskHost.FindRunningPid,
             isAlive: CrossDeskHost.IsProcessAlive,
             isInstalled: CrossDeskHost.IsInstalled,
@@ -49,9 +49,26 @@ public sealed class CrossDeskRemoteAdapter : IRemoteAdapter
         Func<bool> isInstalled,
         Func<IReadOnlyList<string>> onlineDeviceNames,
         Func<DateTimeOffset?>? oldestStartTime = null)
+        : this(
+            logPaths: [logPath ?? CrossDeskHost.DefaultLogPath],
+            findPid: findPid,
+            isAlive: isAlive,
+            isInstalled: isInstalled,
+            onlineDeviceNames: onlineDeviceNames,
+            oldestStartTime: oldestStartTime)
+    {
+    }
+
+    internal CrossDeskRemoteAdapter(
+        IEnumerable<string> logPaths,
+        Func<int?> findPid,
+        Func<int, bool> isAlive,
+        Func<bool> isInstalled,
+        Func<IReadOnlyList<string>> onlineDeviceNames,
+        Func<DateTimeOffset?>? oldestStartTime = null)
     {
         _processWatch = new UUProcessWatch(findPid, isAlive);
-        _tail = new CrossDeskLogTail(logPath);
+        _tail = new CrossDeskMultiLogTail(logPaths);
         _isInstalled = isInstalled;
         _onlineDeviceNames = onlineDeviceNames;
         _oldestStartTime = oldestStartTime ?? (static () => null);

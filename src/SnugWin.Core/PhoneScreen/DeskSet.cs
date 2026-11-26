@@ -187,6 +187,47 @@ public sealed class DeskSet
             desk.VerifyPlacement();
     }
 
+    /// <summary>
+    /// On remote disconnect (entering reconnect grace), immediately restore windows on non-main
+    /// virtual screens back to the physical desktop while keeping displays online for fast reconnect.
+    /// </summary>
+    public void ReturnWindowsOnInterrupt()
+    {
+        _ = _lane.Run(async () =>
+        {
+            foreach (var wish in _wishes.ToList())
+            {
+                if (wish.IsMain) continue;
+                if (!_desks.TryGetValue(wish.Id, out var desk)) continue;
+                if (desk.State.Placed is null && desk.State.Brought.Count == 0) continue;
+                await desk.ReturnWindowsOnInterruptAsync();
+            }
+        });
+    }
+
+    /// <summary>
+    /// Safety net: if no remote session is active, reclaim any windows left placed or brought
+    /// on non-main prepared virtual screens back to the physical desktop so nothing gets stranded.
+    /// </summary>
+    public void ReclaimIdlePreparedScreens()
+    {
+        if (_remote) return;
+        bool anyStranded = false;
+        foreach (var wish in _wishes)
+        {
+            if (!wish.Prepared || wish.IsMain) continue;
+            if (_desks.TryGetValue(wish.Id, out var desk)
+                && (desk.State.Placed is not null || desk.State.Brought.Count > 0)
+                && desk.State.Work is null)
+            {
+                anyStranded = true;
+                break;
+            }
+        }
+        if (anyStranded)
+            _ = _lane.Run(EndSessionAsync);
+    }
+
     public void CheckReturns()
     {
         foreach (var desk in _desks.Values)

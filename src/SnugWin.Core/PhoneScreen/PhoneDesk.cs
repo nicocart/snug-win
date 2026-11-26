@@ -953,6 +953,22 @@ public sealed class PhoneDesk
         State = State with { ListVisible = true };
     }
 
+    /// <summary>
+    /// Immediately returns placed/brought windows to the physical desktop when the remote disconnects,
+    /// while leaving the virtual display online during the reconnect grace window (zero flicker if reconnecting).
+    /// </summary>
+    internal async Task ReturnWindowsOnInterruptAsync()
+    {
+        if (!_wanted || _display is not { } d || !_displays.IsOnline(d.Id))
+            return;
+        if (_placement is { } p)
+            _ = await ReturnToOriginalAsync(p);
+        await ReturnAllBroughtAsync();
+        await EvacuateStrayWindowsAsync();
+        await MatchWidthAsync();
+        State = State with { ListVisible = true };
+    }
+
     private async Task EvacuateStrayWindowsAsync()
     {
         if (_display is not { } d) return;
