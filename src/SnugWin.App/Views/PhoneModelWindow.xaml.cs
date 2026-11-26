@@ -142,11 +142,24 @@ public partial class PhoneModelWindow : Window
         RefreshList(SearchBox.Text);
     }
 
+    public sealed record GenericPresetRow(string Label, PhoneChoice Choice);
+
     private void RefreshList(string query)
     {
         IReadOnlySet<DeviceKind> filter = _selectedKindFilter is { } single
             ? new HashSet<DeviceKind> { single }
             : _allowedKinds;
+
+        var presets = new List<GenericPresetRow>();
+        foreach (var preset in PhoneCatalog.GenericPresets)
+        {
+            if (filter.Contains(preset.Kind))
+                presets.Add(new GenericPresetRow(preset.Model ?? preset.Kind.DisplayName(), preset));
+        }
+        GenericPresetsList.ItemsSource = presets;
+        GenericPresetsCard.Visibility = presets.Count > 0 && string.IsNullOrWhiteSpace(query)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
         var rows = new List<ModelRow>();
         foreach (var brand in _controller.Catalog.Search(query, filter))
@@ -155,6 +168,12 @@ public partial class PhoneModelWindow : Window
                 rows.Add(new ModelRow(m, _orientation));
         }
         ModelList.ItemsSource = rows;
+    }
+
+    private void OnSelectGenericPreset(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { Tag: PhoneChoice choice })
+            ApplyChoice(choice);
     }
 
     private void OnSearchChanged(object sender, TextChangedEventArgs e) =>

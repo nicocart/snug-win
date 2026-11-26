@@ -265,6 +265,17 @@ public sealed class PhoneCatalog
         return choice;
     }
 
+    public static readonly IReadOnlyList<PhoneChoice> GenericPresets =
+    [
+        new("通用全面屏手机 (19.5:9)", new PhoneScreenSpecData(1170, 2532, 390), DeviceKind.Phone),
+        new("通用宽长手机 (20:9)", new PhoneScreenSpecData(1080, 2400), DeviceKind.Phone),
+        new("通用平板 (4:3)", new PhoneScreenSpecData(1620, 2160, 810), DeviceKind.Tablet),
+        new("宽屏平板 (16:10)", new PhoneScreenSpecData(1600, 2560, 800), DeviceKind.Tablet),
+        new("通用电脑 1080p (16:9)", new PhoneScreenSpecData(1080, 1920), DeviceKind.Computer),
+        new("通用电脑 2K (16:9)", new PhoneScreenSpecData(1440, 2560), DeviceKind.Computer),
+        new("通用笔记本 (16:10)", new PhoneScreenSpecData(1600, 2560), DeviceKind.Computer)
+    ];
+
     public IReadOnlyList<Brand> Search(string query, IReadOnlySet<DeviceKind>? kinds = null)
     {
         var source = kinds is null ? Brands : Brands.Where(b => kinds.Contains(b.Kind)).ToList();
@@ -285,6 +296,124 @@ public sealed class PhoneCatalog
                 matched.Add(new Brand(brand.Name, brand.Aliases, models, brand.Kind));
         }
         return matched;
+    }
+
+    /// <summary>
+    /// Attempts to match a remote controller name (e.g. from UU Remote's controller list like
+    /// "明明的 iPhone 16 Pro Max" or "Xiaomi 15 Ultra") against phone/tablet models in the catalog.
+    /// Prefers the longest/most-specific match so "iPhone 16 Pro Max" beats "iPhone 16 Pro" and "iPhone 16".
+    /// </summary>
+    public PhoneModel? MatchControllerName(string? controllerName)
+    {
+        string raw = NormalizeControllerText(controllerName);
+        if (raw.Length < 4) return null;
+
+        PhoneModel? bestModel = null;
+        int bestScore = 0;
+
+        foreach (var brand in Brands)
+        {
+            if (!brand.Kind.IsTouch()) continue;
+            var brandTokens = new[] { brand.Name }.Concat(brand.Aliases)
+                .Select(NormalizeControllerText)
+                .Where(s => s.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            foreach (var model in brand.Models)
+            {
+                string modelNorm = NormalizeControllerText(model.Name);
+                string baseNorm = NormalizeModelBase(model.Name);
+                if (modelNorm.Length < 4 && baseNorm.Length < 4) continue;
+
+                // Candidate 1: Brand + Model (e.g. "xiaomi15ultra", "苹果iphone16pro", "huawei mate60pro")
+                foreach (var bt in brandTokens)
+                {
+                    if (modelNorm.Length >= 4)
+                    {
+                        string combined = bt + modelNorm;
+                        if (combined.Length >= 5 && raw.Contains(combined, StringComparison.Ordinal))
+                        {
+                            int score = combined.Length * 2 + 120;
+                            if (score > bestScore)
+                            {
+                                bestScore = score;
+                                bestModel = model;
+                            }
+                        }
+                    }
+
+                    if (baseNorm.Length >= 4 && baseNorm != modelNorm)
+                    {
+                        string combinedBase = bt + baseNorm;
+                        if (combinedBase.Length >= 5 && raw.Contains(combinedBase, StringComparison.Ordinal))
+                        {
+                            int score = combinedBase.Length * 2 + 90;
+                            if (score > bestScore)
+                            {
+                                bestScore = score;
+                                bestModel = model;
+                            }
+                        }
+                    }
+                }
+
+                // Candidate 2: Self-identifying product lines (e.g. "iphone16pro", "ipadpro11", "galaxys24ultra")
+                foreach (var (candidate, bonus) in new[] { (modelNorm, 40), (baseNorm, 20) })
+                {
+                    if (candidate.Length < 4) continue;
+                    bool selfIdentifying = candidate.StartsWith("iphone", StringComparison.Ordinal)
+                        || candidate.StartsWith("ipad", StringComparison.Ordinal)
+                        || candidate.StartsWith("galaxy", StringComparison.Ordinal)
+                        || candidate.StartsWith("pixel", StringComparison.Ordinal)
+                        || candidate.StartsWith("redmi", StringComparison.Ordinal)
+                        || candidate.StartsWith("oneplus", StringComparison.Ordinal)
+                        || candidate.StartsWith("mate", StringComparison.Ordinal)
+                        || candidate.StartsWith("pura", StringComparison.Ordinal)
+                        || candidate.StartsWith("findx", StringComparison.Ordinal)
+                        || candidate.StartsWith("iqoo", StringComparison.Ordinal)
+                        || candidate.StartsWith("mix", StringComparison.Ordinal);
+
+                    if (selfIdentifying && raw.Contains(candidate, StringComparison.Ordinal))
+                    {
+                        int score = candidate.Length * 2 + bonus;
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            bestModel = model;
+                        }
+                    }
+                }
+            }
+        }
+
+        return bestModel;
+    }
+
+    private static string NormalizeModelBase(string? modelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName)) return string.Empty;
+        string s = modelName;
+        int idxCn = s.IndexOf('（');
+        if (idxCn > 0) s = s[..idxCn];
+        int idxEn = s.IndexOf('(');
+        if (idxEn > 0) s = s[..idxEn];
+        s = s.Replace("英寸", "", StringComparison.Ordinal)
+             .Replace("-inch", "", StringComparison.OrdinalIgnoreCase)
+             .Replace("inch", "", StringComparison.OrdinalIgnoreCase);
+        return NormalizeControllerText(s);
+    }
+
+    internal static string NormalizeControllerText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (char c in text.ToLowerInvariant())
+        {
+            if (char.IsLetterOrDigit(c))
+                sb.Append(c);
+        }
+        return sb.ToString();
     }
 
     internal static string Normalize(string text)
